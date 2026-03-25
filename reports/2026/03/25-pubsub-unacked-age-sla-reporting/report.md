@@ -30,97 +30,68 @@
 ## Proof
 
 <details>
-<summary>[Cloud Monitoring] Oldest unacked age peaked at 103 min (~6,177s) at 03:35 IST</summary>
+<summary>[Grafana] Oldest unacked age peaked at ~1.53 hours at 03:35 IST</summary>
 
-> **Verify:** `oldest_unacked_message_age` metric shows sustained elevation above 1,800s (30 min threshold) from ~19:00 IST Mar 24 through the alert window.
+> **Verify:** The green area chart shows sustained elevation above 50 min from ~03:00 IST, peaking at ~1.53 hours around 03:35 IST, then gradually declining.
 
-| Time (IST) | Oldest Unacked (s) | Minutes |
-|---|---|---|
-| 03:30 (22:00 UTC) | 6,044 | 101 |
-| 03:35 (22:05 UTC) | 6,177 | 103 |
-| 03:40 (22:10 UTC) | 6,156 | 103 |
-| 04:10 (22:40 UTC) | 5,876 | 98 |
-| 04:30 (23:00 UTC) | 4,673 | 78 |
-| 05:00 (23:30 UTC) | 4,061 | 68 |
+![Oldest Unacked Age](screenshots/001-worker-detailed-view-oldest-unacked-message-age-timeseries-annotated.png)
 
-[Open in GCP Console](https://console.cloud.google.com/cloudpubsub/subscription/detail/crm-conversations-sla-reporting-events-sub?project=highlevel-backend)
+**Context (filters + time range):**
+
+![Context](screenshots/001-worker-detailed-view-oldest-unacked-message-age-timeseries-context.png)
+
+[Open in Grafana](https://prod.grafana.leadconnectorhq.com/d/a04e5483-eb8c-47ef-8198-30147926964c/worker-detailed-view?orgId=1&var-datasource=GCP&var-projectId=highlevel-backend&var-subscriptionId=crm-conversations-sla-reporting-events-sub&var-topic=crm-conversations-sla-reporting-events&var-deadletter=crm-conversations-sla-reporting-events-dl-sub&from=1774368000000&to=1774377000000)
 </details>
 
 <details>
-<summary>[Cloud Monitoring] Backlog draining — 52k → 21k undelivered over 90 min</summary>
+<summary>[Grafana] Subscription stats — 117K sent, 30.2K nacks, 1.70 min avg ack latency</summary>
 
-> **Verify:** `num_undelivered_messages` shows a steady decline from 52,343 at 03:30 IST to 21,435 at 05:00 IST, confirming workers ARE processing but can't keep up with incoming + retried messages.
+> **Verify:** The gauges show 117K total sent messages, 30.2K total nack requests (significant nack volume), and 1.70 min average ack latency. "No data" for expired deadlines is expected (metric not exported for this consumer path).
 
-| Time (IST) | Undelivered |
-|---|---|
-| 03:30 (22:00 UTC) | 52,343 |
-| 04:10 (22:40 UTC) | 35,483 |
-| 04:30 (23:00 UTC) | 22,704 |
-| 05:00 (23:30 UTC) | 21,435 |
+![Subscription Stats](screenshots/002-worker-detailed-view-subscription-stats-gauges-annotated.png)
 
-2-week trend: 0 undelivered through Mar 22, 1,386 on Mar 23, 78,446 peak on Mar 24 — backlog is recent.
+[Open in Grafana](https://prod.grafana.leadconnectorhq.com/d/a04e5483-eb8c-47ef-8198-30147926964c/worker-detailed-view?orgId=1&var-datasource=GCP&var-projectId=highlevel-backend&var-subscriptionId=crm-conversations-sla-reporting-events-sub&var-topic=crm-conversations-sla-reporting-events&var-deadletter=crm-conversations-sla-reporting-events-dl-sub&from=1774368000000&to=1774377000000)
 </details>
 
 <details>
-<summary>[Cloud Monitoring] Sent/ack ratio ~1.0x — no retry amplification</summary>
+<summary>[Grafana] Ack rate steady — workers processing throughout</summary>
 
-> **Verify:** `sent_message_count` vs `ack_message_count` ratio stays between 0.94x and 1.06x, ruling out nack-based retry storms.
+> **Verify:** The ack count timeseries shows a steady processing rate throughout the window, confirming workers are actively processing messages (not stalled).
 
-| Time (IST) | Sent | Acked | Ratio |
-|---|---|---|---|
-| 04:00 (22:30 UTC) | 6,817 | 6,490 | 1.05x |
-| 04:10 (22:40 UTC) | 6,852 | 6,677 | 1.03x |
-| 04:35 (23:05 UTC) | 4,757 | 5,067 | 0.94x |
-| 04:45 (23:15 UTC) | 4,853 | 4,880 | 0.99x |
+![Ack Count](screenshots/003-worker-detailed-view-ack-count-timeseries-annotated.png)
 
+[Open in Grafana](https://prod.grafana.leadconnectorhq.com/d/a04e5483-eb8c-47ef-8198-30147926964c/worker-detailed-view?orgId=1&var-datasource=GCP&var-projectId=highlevel-backend&var-subscriptionId=crm-conversations-sla-reporting-events-sub&var-topic=crm-conversations-sla-reporting-events&var-deadletter=crm-conversations-sla-reporting-events-dl-sub&from=1774368000000&to=1774377000000)
 </details>
 
 <details>
-<summary>[GCP Logs] Consistent ERROR: "Missing required sla.cleared_* fields on outbound message"</summary>
+<summary>[GCP Logs] 1,430 ERRORs — all "Missing required sla.cleared_* fields (MB code bug?)"</summary>
 
-> **Verify:** All ERROR logs from the worker show the same validation failure in `handleOutboundCleared`, with `hasInboundId: false` in metadata.
+> **Verify:** The Log Explorer shows 1,430 ERROR results, all from `crm-conversations-sla-reporting-worker`, all with the same message pattern. The timeline histogram shows sustained error volume across the window.
+
+![GCP Error Logs](screenshots/001-gcp-error-logs-annotated.png)
 
 ```
 resource.type="k8s_container"
 resource.labels.container_name="crm-conversations-sla-reporting-worker"
 severity>=ERROR
-timestamp>="2026-03-24T22:00:00Z"
-timestamp<="2026-03-24T23:30:00Z"
+jsonPayload.message=~"Missing required sla.cleared"
 ```
 
-Error distribution (30-entry sample):
-- 15× `SLA Reporting: batch message failed`
-- 15× `SLA Reporting: Missing required sla.cleared_* fields (MB code bug?)`
-
-Error volume: ~100-280 errors per 5 minutes throughout the incident window, peaking at ~22:40 UTC.
-
-Sample log entry metadata:
-```json
-{
-  "hasInboundId": false,
-  "hasChannel": true,
-  "hasInboundAt": true,
-  "hasOverdueAt": true,
-  "messageId": "Sb9L80kfGhu4wDnMDrnS"
-}
-```
-
-[Open in GCP Log Explorer](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22crm-conversations-sla-reporting-worker%22%0Aseverity%3E%3DERROR;timeRange=2026-03-24T22:00:00Z%2F2026-03-24T23:30:00Z?project=highlevel-backend)
+[Open in GCP Log Explorer](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22crm-conversations-sla-reporting-worker%22%0Aseverity%3E%3DERROR%0AjsonPayload.message%3D~%22Missing%20required%20sla.cleared%22;timeRange=2026-03-24T22%3A00%3A00Z%2F2026-03-24T23%3A30%3A00Z?project=highlevel-backend)
 </details>
 
 <details>
-<summary>[Code] Worker nacks failed messages — retry with exponential backoff up to 600s</summary>
+<summary>[Grafana] Pod health — CPU <10% of request, no restarts</summary>
 
-> **Verify:** The worker's `processBatch` only adds successfully processed messages to `successAckIds`. Failed messages are NOT added, causing PubSub to retry them (subscription config: min backoff 10s, max backoff 600s, max 10 delivery attempts before dead-letter).
+> **Verify:** CPU usage for all 4 pods is well below the 0.5 CPU request line (dashed blue), confirming no resource pressure. Pod Restarts panel shows no data (= zero restarts).
 
-The production-deployed code has `handleOutboundCleared` logic (visible in compiled JS at line 608/696) that validates `sla.cleared_*` fields on outbound messages. When validation fails (`hasInboundId: false`), the message is not acked and PubSub retries it.
+![CPU by Pod](screenshots/004-app-detailed-view-cpu-by-pod-annotated.png)
 
-Subscription retry config:
-- `minimumBackoff: 10s`
-- `maximumBackoff: 600s`
-- `maxDeliveryAttempts: 10`
-- Dead-letter topic: `crm-conversations-sla-reporting-events-dl`
+**Context (filters + time range):**
 
+![Context](screenshots/004-app-detailed-view-cpu-by-pod-context.png)
+
+[Open in Grafana](https://prod.grafana.leadconnectorhq.com/d/a4859d4a-1e0a-4ae3-b9b2-d04d366cf29b/app-detailed-view?orgId=1&var-cluster=workers-us-central-production-cluster&var-container=crm-conversations-sla-reporting-worker&var-gcpProject=highlevel-backend&from=1774368000000&to=1774377000000)
 </details>
 
 ## Action Items
