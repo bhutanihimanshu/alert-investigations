@@ -30,7 +30,7 @@
 
 > **What to look for:** The green area chart should show sustained elevation above 50 min from ~03:00 IST, peaking at ~1.53 hours around 03:35 IST, then gradually declining as failed messages exhaust retries and dead-letter.
 
-![Oldest Unacked Age](screenshots/001-worker-detailed-view-oldest-unacked-message-age-timeseries-annotated.png)
+![Oldest Unacked Age](screenshots/001-worker-detailed-view-oldest-unacked-message-age-timeseries.png)
 
 **Context (filters + time range):**
 
@@ -82,7 +82,7 @@
 
 > **What to look for:** The gauges show total sent messages, nack count (significant volume indicating processing failures), and average ack latency. The high nack count (30.2K) relative to sent (117K) confirms a subset of messages consistently failing.
 
-![Subscription Stats](screenshots/002-worker-detailed-view-subscription-stats-gauges-annotated.png)
+![Subscription Stats](screenshots/002-worker-detailed-view-subscription-stats-gauges.png)
 
 [Open in Grafana](https://prod.grafana.leadconnectorhq.com/d/a04e5483-eb8c-47ef-8198-30147926964c/worker-detailed-view?orgId=1&var-datasource=GCP&var-projectId=highlevel-backend&var-subscriptionId=crm-conversations-sla-reporting-events-sub&var-topic=crm-conversations-sla-reporting-events&var-deadletter=crm-conversations-sla-reporting-events-dl-sub&from=1774368000000&to=1774377000000)
 
@@ -124,7 +124,7 @@ The backlog is recent — 0 through Mar 22, then rapid growth starting Mar 23.
 
 > **What to look for:** The ack count timeseries should show a steady, positive processing rate throughout the window, confirming workers are actively processing (not stalled).
 
-![Ack Count](screenshots/003-worker-detailed-view-ack-count-timeseries-annotated.png)
+![Ack Count](screenshots/003-worker-detailed-view-ack-count-timeseries.png)
 
 [Open in Grafana](https://prod.grafana.leadconnectorhq.com/d/a04e5483-eb8c-47ef-8198-30147926964c/worker-detailed-view?orgId=1&var-datasource=GCP&var-projectId=highlevel-backend&var-subscriptionId=crm-conversations-sla-reporting-events-sub&var-topic=crm-conversations-sla-reporting-events&var-deadletter=crm-conversations-sla-reporting-events-dl-sub&from=1774368000000&to=1774377000000)
 
@@ -183,7 +183,7 @@ Publish rate is steady. The spike at 04:40 IST (8,124) is a brief burst but not 
 
 > **What to look for:** CPU usage for all 4 pods should be well below the 0.5 CPU request line (dashed blue), confirming no resource pressure. Pod Restarts panel should show "No data" (= zero restarts).
 
-![CPU by Pod](screenshots/004-app-detailed-view-cpu-by-pod-annotated.png)
+![CPU by Pod](screenshots/004-app-detailed-view-cpu-by-pod.png)
 
 **Context (filters + time range):**
 
@@ -207,7 +207,7 @@ All pods on the same ReplicaSet (`5847f79bbb`), indicating no recent deployment 
 
 > **What to look for:** The Log Explorer should show all ERROR entries with the same validation failure pattern. The timeline histogram should show sustained error volume across the window.
 
-![GCP Error Logs](screenshots/001-gcp-error-logs-annotated.png)
+![GCP Error Logs](screenshots/001-gcp-error-logs.png)
 
 [Open in GCP Log Explorer](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22crm-conversations-sla-reporting-worker%22%0Aseverity%3E%3DERROR%0AjsonPayload.message%3D~%22Missing%20required%20sla.cleared%22;timeRange=2026-03-24T22%3A00%3A00Z%2F2026-03-24T23%3A30%3A00Z?project=highlevel-backend)
 

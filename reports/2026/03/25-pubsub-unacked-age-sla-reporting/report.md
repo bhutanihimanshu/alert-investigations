@@ -34,7 +34,7 @@
 
 > **Verify:** The green area chart shows sustained elevation above 50 min from ~03:00 IST, peaking at ~1.53 hours around 03:35 IST, then gradually declining.
 
-![Oldest Unacked Age](screenshots/001-worker-detailed-view-oldest-unacked-message-age-timeseries-annotated.png)
+![Oldest Unacked Age](screenshots/001-worker-detailed-view-oldest-unacked-message-age-timeseries.png)
 
 **Context (filters + time range):**
 
@@ -48,7 +48,7 @@
 
 > **Verify:** The gauges show 117K total sent messages, 30.2K total nack requests (significant nack volume), and 1.70 min average ack latency. "No data" for expired deadlines is expected (metric not exported for this consumer path).
 
-![Subscription Stats](screenshots/002-worker-detailed-view-subscription-stats-gauges-annotated.png)
+![Subscription Stats](screenshots/002-worker-detailed-view-subscription-stats-gauges.png)
 
 [Open in Grafana](https://prod.grafana.leadconnectorhq.com/d/a04e5483-eb8c-47ef-8198-30147926964c/worker-detailed-view?orgId=1&var-datasource=GCP&var-projectId=highlevel-backend&var-subscriptionId=crm-conversations-sla-reporting-events-sub&var-topic=crm-conversations-sla-reporting-events&var-deadletter=crm-conversations-sla-reporting-events-dl-sub&from=1774368000000&to=1774377000000)
 </details>
@@ -58,7 +58,7 @@
 
 > **Verify:** The ack count timeseries shows a steady processing rate throughout the window, confirming workers are actively processing messages (not stalled).
 
-![Ack Count](screenshots/003-worker-detailed-view-ack-count-timeseries-annotated.png)
+![Ack Count](screenshots/003-worker-detailed-view-ack-count-timeseries.png)
 
 [Open in Grafana](https://prod.grafana.leadconnectorhq.com/d/a04e5483-eb8c-47ef-8198-30147926964c/worker-detailed-view?orgId=1&var-datasource=GCP&var-projectId=highlevel-backend&var-subscriptionId=crm-conversations-sla-reporting-events-sub&var-topic=crm-conversations-sla-reporting-events&var-deadletter=crm-conversations-sla-reporting-events-dl-sub&from=1774368000000&to=1774377000000)
 </details>
@@ -68,7 +68,7 @@
 
 > **Verify:** The Log Explorer shows 1,430 ERROR results, all from `crm-conversations-sla-reporting-worker`, all with the same message pattern. The timeline histogram shows sustained error volume across the window.
 
-![GCP Error Logs](screenshots/001-gcp-error-logs-annotated.png)
+![GCP Error Logs](screenshots/001-gcp-error-logs.png)
 
 ```
 resource.type="k8s_container"
@@ -85,7 +85,7 @@ jsonPayload.message=~"Missing required sla.cleared"
 
 > **Verify:** CPU usage for all 4 pods is well below the 0.5 CPU request line (dashed blue), confirming no resource pressure. Pod Restarts panel shows no data (= zero restarts).
 
-![CPU by Pod](screenshots/004-app-detailed-view-cpu-by-pod-annotated.png)
+![CPU by Pod](screenshots/004-app-detailed-view-cpu-by-pod.png)
 
 **Context (filters + time range):**
 
