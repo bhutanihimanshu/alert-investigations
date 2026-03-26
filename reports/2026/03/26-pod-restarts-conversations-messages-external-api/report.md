@@ -2,6 +2,20 @@
 
 **Author:** Himanshu Bhutani | **Status:** Auto-resolved | **Acknowledged by:** Balaji Venkatesh
 
+## Update Note (2026-03-27)
+
+This original report is retained as-is and not deleted.
+
+An expanded deep-dive report is available here:
+- [Deep-dive concise](https://github.com/bhutanihimanshu/alert-investigations/blob/main/reports/2026/03/26-pod-restarts-conversations-messages-external-api-memory-deep-dive/report.md)
+- [Deep-dive verbose](https://github.com/bhutanihimanshu/alert-investigations/blob/main/reports/2026/03/26-pod-restarts-conversations-messages-external-api-memory-deep-dive/report-verbose.md)
+
+What the deep-dive adds beyond this report:
+- Direct memory-tracking log proof for upload route: `POST /conversations/messages/upload` with `contentLength=15554228` causing `rss +1394 MiB` and `heap +90 MiB`.
+- Watchdog memory evidence on the same pod (`pb8jm`): `rss=3162 MiB`, `heap=640 MiB`, `usagePercent=70`.
+- Pod-specific restart-trigger events for `pb8jm` (liveness/readiness `HTTP 500`) aligned to restart time.
+- Additional screenshots dedicated to the above GCP evidence and focused Grafana correlation.
+
 ## Summary
 
 | Field | Value |

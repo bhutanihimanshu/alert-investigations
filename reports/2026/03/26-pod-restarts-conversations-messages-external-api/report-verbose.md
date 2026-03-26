@@ -3,6 +3,20 @@
 **Author:** Himanshu Bhutani
 **Generated:** 2026-03-27 01:20 IST
 
+## Update Note (2026-03-27)
+
+This original verbose report is retained and not deleted.
+
+An expanded deep-dive report is available here:
+- [Deep-dive concise](https://github.com/bhutanihimanshu/alert-investigations/blob/main/reports/2026/03/26-pod-restarts-conversations-messages-external-api-memory-deep-dive/report.md)
+- [Deep-dive verbose](https://github.com/bhutanihimanshu/alert-investigations/blob/main/reports/2026/03/26-pod-restarts-conversations-messages-external-api-memory-deep-dive/report-verbose.md)
+
+What the deep-dive adds beyond this report:
+- Direct memory-tracking log evidence linking restart progression to upload-route native memory growth on pod `pb8jm`.
+- Verified GCP query outputs for the upload spike (`rss +1394 MiB`, `heap +90 MiB`) and watchdog warning (`rss=3162 MiB`, `heap=640 MiB`).
+- Pod-specific liveness/readiness failure evidence at restart edge (`HTTP 500`) for the same pod.
+- Additional focused screenshots and report sections for these memory-tracking signals.
+
 ---
 
 ## 1. Alert Summary
