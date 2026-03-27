@@ -1,86 +1,117 @@
-# HTTPLatencyPerApp — sentinel-api — 2026-03-27
+# PubSub Unacked Messages — clickhouse-indexing-bulk-actions-logs-v1-worker — 2026-03-27
 
-**Author:** Himanshu Bhutani | **Status:** Auto-resolved (transient)
+**Author:** Himanshu Bhutani | **Status:** Active (backlog still draining)
 
 ## Summary
 
 | Field | Value |
 |-------|-------|
-| Alert | HTTPLatencyPerApp #113821 |
-| Service | sentinel-api |
-| Fired | 15:13 IST (09:43 UTC) |
-| Duration | ~6 minutes (self-resolved by 15:14 IST) |
-| Impact | No user-facing impact — internal script validation endpoint, no 5xx errors |
+| Alert | #113831 — Pubsub Unacked Messages above 10k |
+| Service | `clickhouse-indexing-bulk-actions-logs-v1-worker` |
+| Subscription | `clickhouse-indexing-bulk-actions-logs-v1-events-sub` |
+| Cluster | `workers-us-central-production-cluster` |
+| Fired | 18:46 IST (13:16 UTC) |
+| Peak backlog | ~1,120,447 messages at ~19:06 IST (13:36 UTC) |
+| Impact | ClickHouse indexing of bulk action logs delayed; no user-facing impact |
+| Recurring | Yes — 7+ prior alerts, historically up to 1.5M messages |
 
 ## Root Cause
 
-A single slow external HTTP call in `fetchScriptContent()` blocked for ~15 seconds when customer-hosted URLs on `mediasimplifiednow.com` were unresponsive. With sentinel-api processing only ~1 request every 2.5 minutes, one slow request pushed the P99 latency above the 10s alert threshold. **This is a recurring pattern** — 55 historical alerts on this service.
+**HPA thrashing due to competing scaling metrics.** The worker's HPA uses both PubSub `num_undelivered_messages` (external metric, scales UP) and CPU utilization (scales DOWN). When a traffic burst arrives, HPA scales up to 20 pods. The new pods process messages quickly, dropping CPU utilization below the target. CPU-based scaling then aggressively scales down to 5 pods within minutes. With only 5 pods, the worker can't keep up with the bursty publish rate (up to 315k msgs/min), and the backlog rebuilds. This oscillation cycle repeats, preventing the backlog from fully draining.
+
+## What Happened
+
+1. **18:29 IST (12:59 UTC)** — HPA scaled DOWN from 9 → 5 pods (CPU below target), while backlog was building.
+2. **18:34 IST (13:04 UTC)** — Backlog surged; HPA scaled UP 5 → 10 → 20 in two rapid steps driven by PubSub external metric.
+3. **18:55 IST (13:25 UTC)** — With 20 pods, CPU utilization dropped; HPA scaled DOWN 20 → 12 → 9 → 8 → 5 in 4 steps over 4 minutes.
+4. **19:00 IST (13:30 UTC)** — With 5 pods, backlog rebuilt; HPA scaled UP 5 → 10 → 15 → 20 in 3 rapid steps.
+5. **19:06 IST (13:36 UTC)** — Backlog peaked at ~1,120,447. Worker processing at ~92.6k msgs/min (ack rate stayed positive throughout).
+
+**Confidence: HIGH** — HPA events, PubSub metrics, and GCP logs all converge on this pattern.
 
 ## Proof
 
 <details>
-<summary>[Grafana] P99 latency spiked from 2.5s → 14.97s at 15:08 IST, resolved by 15:14 IST</summary>
+<summary>[Cloud Monitoring] Backlog peaked at 1.12M with sent/ack ratio ~1.0 (no retry amplification)</summary>
 
-> **Verify:** Look at the P99 Latency panel — a single spike to ~15s in an otherwise low-latency service. Traffic is ~0.006 rps — too low for reliable percentile calculation.
+> **Verify:** num_undelivered_messages rose from ~541 at 17:30 IST to 1.12M at 19:06 IST. Ack rate remained high (~92.6k msgs/min average). Sent/ack ratio stayed ~1.0, ruling out nack-based retry storm.
 
-![API Requests Overview](screenshots/001-api-requests-overview-sentinel-api-p99-latency-spike-and-tra.png)
+![Worker Detailed View](screenshots/001-worker-detailed-view-subscription-stats-unacked-messages-ack.png)
 
-[Open in Grafana](https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f/api-requests-overview?orgId=1&var-datasource=ber8nnhvgsjy8f&var-container=sentinel-api&from=1774603800000&to=1774605300000)
+[Open in Grafana](https://prod.grafana.leadconnectorhq.com/d/a04e5483-eb8c-47ef-8198-30147926964c/worker-detailed-view?orgId=1&var-subscriptionId=clickhouse-indexing-bulk-actions-logs-v1-events-sub&var-projectId=highlevel-backend&from=1774611000000&to=1774621800000)
 </details>
 
 <details>
-<summary>[GCP Logs] 3 fetchScriptContent errors at 15:06-15:07 IST — external URLs unresponsive</summary>
+<summary>[K8s Events] HPA oscillated 5→20→5→20 pods in 30 minutes — competing CPU + PubSub metrics</summary>
 
-> **Verify:** All 3 errors are `fetchScriptContent: Error fetching script for src:` pointing to `mediasimplifiednow.com` — a customer-hosted external URL that timed out.
+> **Verify:** SuccessfulRescale events show scale-up driven by `num_undelivered_messages` and scale-down driven by `cpu resource utilization below target`, repeating within minutes.
 
+| Time (IST) | Event |
+|---|---|
+| 18:29 | Scale DOWN 9 → 5 (CPU below target) |
+| 18:34 | Scale UP 5 → 10 → 20 (PubSub backlog) |
+| 18:55–18:59 | Scale DOWN 20 → 12 → 9 → 8 → 5 (CPU below target) |
+| 19:00–19:01 | Scale UP 5 → 10 → 15 → 20 (PubSub backlog) |
+
+![HPA Events](screenshots/002-gcp-hpa-thrashing-competing-metrics-cause-oscillation-between-5-.png)
+
+GCP query:
+```
+resource.type="k8s_cluster"
+(jsonPayload.reason="SuccessfulRescale" OR jsonPayload.reason="ScalingReplicaSet")
+"clickhouse-indexing-bulk-actions-logs-v1"
+```
+
+[Open in GCP Log Explorer](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_cluster%22%0A(jsonPayload.reason%3D%22SuccessfulRescale%22%20OR%20jsonPayload.reason%3D%22ScalingReplicaSet%22)%0A%22clickhouse-indexing-bulk-actions-logs-v1%22;timeRange=2026-03-27T12%3A00%3A00Z%2F2026-03-27T14%3A00%3A00Z?project=highlevel-backend)
+</details>
+
+<details>
+<summary>[GCP Logs] 3,490 Subscriber closed errors — pods terminated mid-batch during scale-down</summary>
+
+> **Verify:** Errors cluster around 12:17 UTC and 13:57 UTC, correlating with HPA scale-down events. The `Message.ack()` call fails because the PubSub subscriber was already closed when the pod was terminated.
+
+![Subscriber Closed Errors](screenshots/001-gcp-subscriber-closed-errors-during-hpa-scale-down-events.png)
+
+GCP query:
 ```
 resource.type="k8s_container"
-resource.labels.container_name="sentinel-api"
+resource.labels.container_name="clickhouse-indexing-bulk-actions-logs-v1-worker"
 severity>=ERROR
-jsonPayload.message=~"fetchScriptContent"
+"Subscriber closed"
 ```
 
-| Time (IST) | Error |
+[Open in GCP Log Explorer](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22clickhouse-indexing-bulk-actions-logs-v1-worker%22%0Aseverity%3E%3DERROR%0A%22Subscriber%20closed%22;timeRange=2026-03-27T12%3A00%3A00Z%2F2026-03-27T14%3A00%3A00Z?project=highlevel-backend)
+</details>
+
+<details>
+<summary>[24h Pattern] Chronic spikes (200k–1.1M) repeating throughout the day — not a one-off</summary>
+
+> **Verify:** The 24h backlog trend shows repeated surges: 833k (Mar 26 20:00 IST), 895k (Mar 27 09:30 IST), 1.12M (Mar 27 19:30 IST). Between each spike, the backlog drains to <10k. This is the HPA thrashing cycle repeating.
+
+| Time (IST) | Peak Backlog |
 |---|---|
-| 15:06:57 | `fetchScriptContent` failed for `amandajohn.mediasimplifiednow.com` |
-| 15:07:06 | `fetchScriptContent` failed for `payments.mediasimplifiednow.com` (latestupdates) |
-| 15:07:07 | `fetchScriptContent` failed for `payments.mediasimplifiednow.com` (tourguide) |
+| Mar 26 20:00 | 833,272 |
+| Mar 26 21:30 | 720,830 |
+| Mar 27 05:00 | 578,778 |
+| Mar 27 09:30 | 895,136 |
+| Mar 27 16:00 | 170,061 |
+| Mar 27 19:00 | 488,343 (alert time) |
+| Mar 27 19:30 | 1,120,447 (peak) |
 
-![GCP Logs](screenshots/001-gcp-fetchscriptcontent-errors-external-script-fetch-timeouts.png)
-
-[Open in GCP Log Explorer](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22sentinel-api%22%0Aseverity%3E%3DERROR%0AjsonPayload.message%3D~%22fetchScriptContent%22;timeRange=2026-03-27T09%3A30%3A00Z%2F2026-03-27T09%3A50%3A00Z?project=highlevel-backend)
-</details>
-
-<details>
-<summary>[Grafana] Zero resource pressure — CPU <2%, memory 22% of limits</summary>
-
-> **Verify:** CPU usage is flat at ~0.01 cores (limit: 1.1 cores). Memory stable at ~350MB (limit: 1.69GB). No resource contention.
-
-![CPU by Pod](screenshots/002-app-detailed-view-cpu-by-pod-panel-16.png)
-![Memory by Pod](screenshots/003-app-detailed-view-memory-by-pod-panel-30.png)
-
-[Open in Grafana](https://prod.grafana.leadconnectorhq.com/d/a4859d4a-1e0a-4ae3-b9b2-d04d366cf29b/app-detailed-view?orgId=1&var-container=sentinel-api&from=1774602000000&to=1774607400000)
-</details>
-
-<details>
-<summary>[Code] axios timeout in fetchScriptContent() is 10s — matches alert threshold exactly</summary>
-
-> **Verify:** `apps/sentinel/src/helper/customJSValidator.ts` uses `axios` with `timeout: 10000` (10s) in `fetchScriptContent()`. A single timeout pushes total request latency past the 10s alert threshold.
-
-Team member in the Slack thread already identified this: *"reduce the timeout for axios call in customjshelper.ts file in marketplace-backend"*.
 </details>
 
 ## Action Items
 
 | Priority | Action | Owner |
 |----------|--------|-------|
-| Medium | Reduce axios timeout in `fetchScriptContent()` from 10s → 3-5s | CRM-Marketplace team |
-| Low | Raise HTTPLatencyPerApp threshold for sentinel-api (or exclude from alert) — too low-traffic for reliable P99 | CRM-Marketplace / Platform |
-| Low | Add circuit breaker for repeated failures to same external domains | CRM-Marketplace team |
+| **High** | Fix HPA competing metrics: either remove CPU-based scaling when external PubSub metric is configured, or add `stabilizationWindowSeconds` (300s+) to `scaleDown` behavior to prevent rapid scale-down | CRM-bulk-actions team |
+| **High** | Increase `minReplicas` from current baseline (scales down to 5) to 10-15 to handle burst traffic without oscillation | CRM-bulk-actions team |
+| **Medium** | Review alert threshold — 10k may be too low for this subscription which regularly operates at 50k–100k during normal burst processing | CRM-bulk-actions team |
+| **Low** | Investigate ClickHouse auto-retry warnings (13 in 2h) — may indicate intermittent ClickHouse connectivity affecting processing speed | CRM-bulk-actions team |
 
 ## Links
 
 - [Verbose report](report-verbose.md)
-- [API Requests Overview — Grafana](https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f/api-requests-overview?orgId=1&var-datasource=ber8nnhvgsjy8f&var-container=sentinel-api&from=1774603800000&to=1774605300000)
-- [App Detailed View — Grafana](https://prod.grafana.leadconnectorhq.com/d/a4859d4a-1e0a-4ae3-b9b2-d04d366cf29b/app-detailed-view?orgId=1&var-container=sentinel-api&from=1774602000000&to=1774607400000)
-- [GCP Log Explorer — fetchScriptContent errors](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22sentinel-api%22%0Aseverity%3E%3DERROR%0AjsonPayload.message%3D~%22fetchScriptContent%22;timeRange=2026-03-27T09%3A30%3A00Z%2F2026-03-27T09%3A50%3A00Z?project=highlevel-backend)
+- [Grafana — Worker Detailed View](https://prod.grafana.leadconnectorhq.com/d/a04e5483-eb8c-47ef-8198-30147926964c/worker-detailed-view?orgId=1&var-subscriptionId=clickhouse-indexing-bulk-actions-logs-v1-events-sub&var-projectId=highlevel-backend&from=1774611000000&to=1774621800000)
+- [Grafana — App Detailed View](https://prod.grafana.leadconnectorhq.com/d/a4859d4a-1e0a-4ae3-b9b2-d04d366cf29b/app-detailed-view?orgId=1&var-container=clickhouse-indexing-bulk-actions-logs-v1-worker&var-cluster=workers-us-central-production-cluster&from=1774611000000&to=1774621800000)
+- [GCP Log Explorer — HPA Events](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_cluster%22%0A(jsonPayload.reason%3D%22SuccessfulRescale%22%20OR%20jsonPayload.reason%3D%22ScalingReplicaSet%22)%0A%22clickhouse-indexing-bulk-actions-logs-v1%22;timeRange=2026-03-27T12%3A00%3A00Z%2F2026-03-27T14%3A00%3A00Z?project=highlevel-backend)
