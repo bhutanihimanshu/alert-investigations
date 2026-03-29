@@ -1,235 +1,261 @@
-# PodRestartsAboveThreshold Investigation — crm-marketplace-update-installation-counts-cron — 2026-03-29
+# PubSub Unacked Messages Investigation — clickhouse-indexing-bulk-actions-logs-v1 — 2026-03-29
 
 **Author:** Himanshu Bhutani
-**Generated:** 2026-03-29 14:45 IST
-
----
+**Generated:** 2026-03-29 20:30 IST
 
 ## 1. Alert Summary
 
 | Field | Value |
 |-------|-------|
-| Alert type | PodRestartsAboveThreshold (#113953) |
-| Workload | crm-marketplace-update-installation-counts-cron-29579250 |
-| Container | crm-marketplace-update-installation-counts-cron |
+| Alert type | Pubsub Unacked Messages above 10k |
+| Alert ID | #113980 |
+| Workload | clickhouse-indexing-bulk-actions-logs-v1-worker |
+| Subscription | clickhouse-indexing-bulk-actions-logs-v1-events-sub |
 | Cluster | workers-us-central-production-cluster |
-| Time | 09:09 IST (03:39 UTC), 2026-03-29 |
-| Threshold | 1 |
-| Current value | 1 |
-| Source channel | #alerts-crm (C0315RRNH1B) |
-| Grafana OnCall | [Alert group IG45WUL3SR8UA](https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IG45WUL3SR8UA) |
+| Namespace | default |
+| Time | 19:10 IST (13:40 UTC), 2026-03-29 |
+| Channel | #alerts-crm via CRM-bulk-actions integration |
+| Severity | WARNING |
+| Alert rule | [Grafana source](https://prod.grafana.leadconnectorhq.com/alerting/grafana/a869c751-a88d-4f06-b984-c4413e22edc3/view?orgId=1) |
 
----
+The alert reported 202,870 unacked messages on `clickhouse-indexing-bulk-actions-logs-v1-events-sub`. The alert group contained 2 total firing alerts.
 
-## 2. Investigation Findings
+## 2. What Happened
 
-### Evidence: Grafana — Pod Restarts
-
-<details>
-<summary>Pod Restarts panel — single restart at ~09:07 IST, count = 1</summary>
-
-> **What to look for:** A single green dot at ~09:05 IST on the Pod Restarts panel. The Y-axis goes from 0 to 1, confirming exactly one restart. The pod name in the legend is `crm-marketplace-update-installation-counts-cron-29579250-l6kvx`.
-
-![Pod Restarts](screenshots/001-app-detailed-view-pod-restarts-panel-36.png)
-
-**Context (filters + time range):**
-![Context](screenshots/001-app-detailed-view-pod-restarts-panel-36-context.png)
-
-[Open in Grafana](https://prod.grafana.leadconnectorhq.com/d/a4859d4a-1e0a-4ae3-b9b2-d04d366cf29b/app-detailed-view?orgId=1&var-datasource=ber8nnhvgsjy8f&var-cluster=workers-us-central-production-cluster&var-container=crm-marketplace-update-installation-counts-cron&from=1774751400000&to=1774762200000&viewPanel=36)
-</details>
-
-<details>
-<summary>App Detailed View — dashboard context showing team ownership and collapsed rows</summary>
-
-> **What to look for:** The dashboard shows the correct container filter (`crm-marketplace-update-installation-counts-cron`), cluster (`workers-us-central-production-cluster`), and time range (2026-03-29 08:00-11:00 IST). Team ownership is `crm` / `marketplace`. Rows are collapsed by default — this is a CronJob, so API Stats and ERROR %age show "No data" (expected).
-
-![Full Dashboard](screenshots/002-app-detailed-view-full-dashboard-cpu-memory-pod-count-restar.png)
-
-[Open in Grafana](https://prod.grafana.leadconnectorhq.com/d/a4859d4a-1e0a-4ae3-b9b2-d04d366cf29b/app-detailed-view?orgId=1&var-datasource=ber8nnhvgsjy8f&var-cluster=workers-us-central-production-cluster&var-container=crm-marketplace-update-installation-counts-cron&from=1774751400000&to=1774762200000)
-</details>
-
-### Evidence: GCP Logs — K8s Cluster Events
-
-<details>
-<summary>K8s cluster events — Job Created (09:00 IST) + Completed (10:06 IST)</summary>
-
-> **What to look for:** Two events in the log results. First: "Created pod: crm-marketplace-update-installation-counts-cron-29579250-l6kvx" at 2026-03-29 09:00:00 IST with `reason=SuccessfulCreate`. Second: "Job completed" at 2026-03-29 10:06:46 IST with `reason=Completed`. This confirms the Job reached successful completion despite the container restart.
-
-![K8s Cluster Events](screenshots/001-gcp-k8s-cluster-events-job-created-completed.png)
-
-```
-resource.type="k8s_cluster"
-resource.labels.project_id="highlevel-backend"
-jsonPayload.involvedObject.name=~"crm-marketplace-update-installation-counts-cron-29579250"
-```
-
-[Open in Log Explorer](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_cluster%22%0Aresource.labels.project_id%3D%22highlevel-backend%22%0AjsonPayload.involvedObject.name%3D~%22crm-marketplace-update-installation-counts-cron-29579250%22;timeRange=2026-03-29T03%3A00%3A00Z%2F2026-03-29T05%3A00%3A00Z?project=highlevel-backend)
-</details>
-
-### Evidence: GCP Logs — Container Application Logs
-
-<details>
-<summary>Container logs — First attempt 503 (09:07 IST), second attempt 201 (10:06 IST)</summary>
-
-> **What to look for:** Two clusters of log entries. **First cluster at 09:06:59 IST:** "HTTP status: 503", the POST request line, "HTTP/1.1 503 Service Unavailable", "upstream connect error or disconnect/reset before headers. reset reason: connection termination", and "Request failed" — this is the first attempt failing due to an Envoy connection reset. **Second cluster at 10:06:44 IST:** "HTTP status: 201", the POST request line, and "HTTP/1.1 201 Created" — this is the second attempt succeeding after ~60 minutes of processing.
-
-![Container Logs](screenshots/002-gcp-container-logs-request-failed-09-07-ist-then-http-201-succes.png)
-
-```
-resource.type="k8s_container"
-resource.labels.container_name="crm-marketplace-update-installation-counts-cron"
-resource.labels.project_id="highlevel-backend"
-textPayload=~"upstream connect error|Request failed|Installation counters|HTTP"
-```
-
-[Open in Log Explorer](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22crm-marketplace-update-installation-counts-cron%22%0Aresource.labels.project_id%3D%22highlevel-backend%22%0AtextPayload%3D~%22upstream%20connect%20error%7CRequest%20failed%7CInstallation%20counters%7CHTTP%22;timeRange=2026-03-29T03%3A30%3A00Z%2F2026-03-29T04%3A40%3A00Z?project=highlevel-backend)
-</details>
-
-### Evidence: Slack — Alert Thread
-
-<details>
-<summary>Alert thread — 25 messages, Smitha asked Ved to validate OOM vs timeout theory</summary>
-
-> **What to look for:** Thread on alert #113953. 25 messages, mostly Grafana OnCall escalations. Key human message from Smitha Shastri: "can you increase the memory as suggested by Reaper and check if it's an actual OOM and not a timeout as we thought?" — this contrasts the prior belief (timeout) with a new OOM theory. No reply from Ved in the thread.
-
-Alert thread: [#alerts-crm permalink](https://gohighlevel.slack.com/archives/C0315RRNH1B/p1774755552547879)
-
-Alert Debug Bot suggested: OOM from loading all installations in memory. Recommended paged/streaming processing, code review of `apps/crm-marketplace/src/crons/update-installation-counts.cron.ts`, and short-term memory limit increase to test OOM theory.
-</details>
-
-### Evidence: Alert Correlator — Cross-Channel Search
-
-<details>
-<summary>Alert Correlator — 0 correlated alerts, 8 occurrences in 12 days, no deployments</summary>
-
-> **What to look for:** This alert is completely isolated — no other alerts fired within ±15 min across #alerts-crm, #alerts-crm-conversations, #alerts-platform, or #alerts-database. No deployment of this cron in the last 2 days. This is a recurring pattern: 8 occurrences in 12 days (Mar 18-29), 41 total messages since Feb 21.
-
-| Check | Result |
-|-------|--------|
-| Correlated alerts (±15 min) | 0 — completely isolated |
-| Alert frequency (12 days) | 8 occurrences (Mar 18, 19, 20, 21, 24, 25, 28, 29) |
-| Total since Feb 21 | 41+ messages in #alerts-crm |
-| Deployment (last 2h) | None |
-| Past investigations | 2 (Mar 15, Mar 16) — both confirmed same pattern |
-</details>
-
----
-
-## 3. Cross-Validation
-
-| Signal | Source | Agrees? |
-|--------|--------|---------|
-| Single restart at ~09:07 IST | Grafana Pod Restarts | ✅ |
-| ContainerDied at 03:37:00 UTC (09:07 IST) | GCP kubelet logs | ✅ |
-| Job Completed at 04:36:46 UTC (10:06 IST) | GCP K8s cluster events | ✅ |
-| First attempt: 503 / Envoy connection reset | GCP container logs | ✅ |
-| Second attempt: HTTP 201 success | GCP container logs | ✅ |
-| 0 correlated alerts | Slack cross-channel search | ✅ |
-| No recent deployment | Slack deployment search | ✅ |
-| Known root cause pattern match | known-root-causes.md | ✅ |
-| 2 prior investigations (Mar 15, 16) | Investigations DB | ✅ |
-
-**Confidence:** HIGH — All 9 signals agree. This matches the documented "CronJob Container Timeout → Restart (false positive)" pattern with identical behavior across 41+ occurrences.
-
----
-
-## 4. Root Cause
-
-**Known false positive — CronJob container timeout → restart.**
-
-The CronJob `crm-marketplace-update-installation-counts-cron` runs daily at ~09:00 IST. It launches a container that makes an HTTP POST to `/marketplace/core/update/installation-counts`, which triggers a heavy MongoDB aggregation. The underlying API takes ~60 minutes to complete.
-
-On 2026-03-29, the first container attempt received an HTTP 503 with "upstream connect error or disconnect/reset before headers. reset reason: connection termination" after ~7 minutes. This is an Envoy/Istio sidecar terminating the upstream connection. K8s restarted the container due to `restartPolicy: OnFailure`. The second attempt completed successfully in ~60 minutes, returning HTTP 201 with "Installation counters updated successfully."
-
-### What Happened
-
-1. **09:00 IST** — CronJob pod `crm-marketplace-update-installation-counts-cron-29579250-l6kvx` created on `workers-us-central-production-cluster`.
-2. **09:07 IST** — First container received HTTP 503 (Envoy connection termination: "upstream connect error or disconnect/reset before headers"). Container died.
-3. **09:07 IST** — K8s restarted the container immediately (`restartPolicy: OnFailure`). Second attempt began.
-4. **09:09 IST** — `PodRestartsAboveThreshold` alert fired (restart count reached 1, threshold = 1).
-5. **10:06 IST** — Second attempt completed: HTTP 201, "Installation counters updated successfully". Job reached Completed status.
+1. **~18:30 IST (13:00 UTC)** — Publish burst to the topic caused `num_undelivered_messages` to start rising from baseline.
+2. **~19:00 IST (13:30 UTC)** — Backlog peaked at ~832k undelivered messages. HPA began scaling up: 5→8→16→20 pods.
+3. **~19:10 IST (13:40 UTC)** — Alert fired. Workers were processing (ack rate 7k-149k/min) but couldn't keep up with the publish burst.
+4. **19:48-19:55 IST (14:18-14:25 UTC)** — Backlog drained to ~200k. HPA scaled DOWN aggressively: 20→17→8→5 within 2 minutes (reason: "CPU below target").
+5. **19:55:06 IST (14:25:06 UTC)** — Scale-down terminated pods mid-processing. Burst of 50+ `INVALID: Subscriber closed` errors as in-flight acks failed.
+6. **~20:00 IST (14:30 UTC)** — Remaining pods caught up. Backlog drained to <3k. Self-resolved.
 
 <details>
 <summary>Detailed timeline — full event log</summary>
 
 | Time (IST) | Source | Event |
 |---|---|---|
-| 09:00:00 | K8s cluster | SuccessfulCreate: Created pod crm-marketplace-update-installation-counts-cron-29579250-l6kvx |
-| 09:00:01-04 | Kubelet | Pulling → Pulled → Created → Started (first container attempt) |
-| 09:06:59.930 | Container log | "HTTP status: 503" |
-| 09:06:59.931 | Container log | "> POST /marketplace/core/update/installation-counts HTTP/1.1" |
-| 09:06:59.931 | Container log | "< HTTP/1.1 503 Service Unavailable" |
-| 09:06:59.931 | Container log | "upstream connect error or disconnect/reset before headers. reset reason: connection termination" |
-| 09:06:59.931 | Container log | "Request failed" |
-| 09:07:00.274 | Kubelet PLEG | ContainerDied (container 646f5670…) |
-| 09:07:01.290 | Kubelet PLEG | ContainerStarted (new container c2919e50…, second attempt) |
-| 09:07:45 | Grafana scrape | kube_pod_container_status_restarts_total → 1 |
-| 09:09:12 | Grafana OnCall | PodRestartsAboveThreshold alert fired (#113953) |
-| 10:06:44.011 | Container log | "HTTP status: 201" |
-| 10:06:44.014 | Container log | "> POST /marketplace/core/update/installation-counts HTTP/1.1" |
-| 10:06:44.016 | Container log | "< HTTP/1.1 201 Created" |
-| 10:06:44.016 | Container log (JSON) | "Installation counters updated successfully" (success: true) |
-| 10:06:44.476 | Kubelet PLEG | ContainerDied (clean exit after success) |
-| 10:06:46 | K8s cluster | Completed: Job completed |
+| ~18:30 | Cloud Monitoring | num_undelivered_messages begins rising from baseline |
+| 19:00:27 | K8s HPA | SuccessfulRescale: New size 20 (from undelivered messages metric) |
+| ~19:03 | Cloud Monitoring | Backlog peaks at ~832k undelivered |
+| 19:10:34 | Grafana OnCall | Alert #113980 fired — 202,870 unacked (second wave value) |
+| ~19:30 | Cloud Monitoring | Backlog dropping as workers process at 100k+/min |
+| 19:36:16 | K8s HPA | ScalingReplicaSet: 16 → 20 pods |
+| 19:36:16 | K8s HPA | SuccessfulRescale: New size 20 (undelivered messages metric) |
+| 19:45:31 | K8s HPA | ScalingReplicaSet: Scaled up from 5 to 8 |
+| 19:48:15 | K8s HPA | SuccessfulRescale: New size 8 (cpu below target) |
+| 19:48:25 | K8s HPA | SuccessfulRescale: New size 5 (cpu below target) |
+| 19:53:19 | K8s HPA | SuccessfulRescale: New size 17 (cpu below target) |
+| 19:53:19 | K8s HPA | ScalingReplicaSet: 20 → 17 |
+| 19:54:15 | K8s HPA | SuccessfulRescale: New size 8 (cpu below target) |
+| 19:54:15 | K8s HPA | ScalingReplicaSet: 17 → 8 |
+| 19:55:05 | K8s HPA | SuccessfulRescale: New size 5 (undelivered messages below target) |
+| 19:55:05 | K8s HPA | ScalingReplicaSet: 8 → 5 |
+| 19:55:06 | GCP Logs | Burst of 50+ `INVALID: Subscriber closed` errors during batch ack |
+| 19:57:15 | Kubelet | Kill container failed / DeadlineExceeded for pod `...2pfnb` |
+| ~20:00 | Cloud Monitoring | Backlog drained to <3k. Self-resolved |
 
 </details>
 
----
+## 3. Investigation Findings
 
-## 5. Probable Noise
+### Evidence: Grafana — Pod Health
+
+<details>
+<summary>HPA pod count oscillated 5→20→5 repeatedly — the smoking gun for HPA thrashing</summary>
+
+> **What to look for:** The green line shows pod count jumping between 5 (minReplicas) and 20 (maxReplicas, orange line) multiple times. Each oscillation cycle takes only a few minutes. The rapid scale-down while backlog is still draining is the direct cause of the alert.
+
+![Pod Count](screenshots/005-app-detailed-view-number-of-pods-hpa-scaling.png)
+
+**Context (filters + time range):**
+
+![Context](screenshots/005-app-detailed-view-number-of-pods-hpa-scaling-context.png)
+
+[Open in Grafana](https://prod.grafana.leadconnectorhq.com/d/a4859d4a-1e0a-4ae3-b9b2-d04d366cf29b/app-detailed-view?orgId=1&var-container=clickhouse-indexing-bulk-actions-logs-v1-worker&from=1774785600000&to=1774796400000&viewPanel=32)
+</details>
+
+<details>
+<summary>CPU stayed at 0.1-0.2 cores across all pods — I/O-bound worker, low CPU triggers premature scale-down</summary>
+
+> **What to look for:** All pod CPU lines stay well below 0.5 cores (the request amount) even during peak processing. This low CPU is what the HPA uses to justify scaling DOWN — even while hundreds of thousands of messages are still in the backlog.
+
+![CPU by Pod](screenshots/004-app-detailed-view-cpu-by-pod.png)
+
+**Context (filters + time range):**
+
+![Context](screenshots/004-app-detailed-view-cpu-by-pod-context.png)
+
+[Open in Grafana](https://prod.grafana.leadconnectorhq.com/d/a4859d4a-1e0a-4ae3-b9b2-d04d366cf29b/app-detailed-view?orgId=1&var-container=clickhouse-indexing-bulk-actions-logs-v1-worker&from=1774785600000&to=1774796400000&viewPanel=16)
+</details>
+
+### Evidence: GCP Logs — HPA Scaling Events
+
+<details>
+<summary>20 HPA events showing rapid scale-up (undelivered metric) and premature scale-down (CPU metric)</summary>
+
+> **What to look for:** The "reason" field in the SuccessfulRescale events. Scale-UP events cite `num_undelivered_messages` as the reason. Scale-DOWN events cite `cpu resource utilization (percentage of request) below target`. These are two competing metrics — one says "scale up, there's a backlog" while the other says "scale down, CPU is low." The CPU metric wins the tiebreak, causing premature scale-down.
+
+![HPA Events](screenshots/002-gcp-hpa-successfulrescale-events-rapid-scale-up-and-scale-down.png)
+
+```
+resource.type="k8s_cluster"
+jsonPayload.involvedObject.name=~"clickhouse-indexing-bulk-actions-logs-v1-worker"
+jsonPayload.reason=~"SuccessfulRescale|ScalingReplicaSet"
+```
+
+[Open in GCP Log Explorer](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_cluster%22%0AjsonPayload.involvedObject.name%3D~%22clickhouse-indexing-bulk-actions-logs-v1-worker%22%0AjsonPayload.reason%3D~%22SuccessfulRescale%7CScalingReplicaSet%22;timeRange=2026-03-29T13%3A30%3A00Z%2F2026-03-29T14%3A30%3A00Z?project=highlevel-backend)
+</details>
+
+### Evidence: GCP Logs — Subscriber Closed Errors
+
+<details>
+<summary>50+ "Subscriber closed" errors at 19:55:06 IST — 1 second after HPA scaled 8→5</summary>
+
+> **What to look for:** The timestamps are sub-second clustered at 14:25:06 UTC (19:55:06 IST), exactly 1 second after the HPA SuccessfulRescale event at 14:25:05Z. The stack trace shows `AckQueue.add → Subscriber.ack → ClickhouseIndexingWorker.processBatchMessage` — confirming the worker was in the middle of batch-acking messages when the PubSub subscriber was shut down during pod termination.
+
+```
+# Sample (5 of 50+ identical entries):
+2026-03-29T14:25:06.440Z | unhandledRejectionError: INVALID : Subscriber closed (at AckQueue.add → Subscriber.ack → processBatchMessage)
+2026-03-29T14:25:06.439Z | unhandledRejectionError: INVALID : Subscriber closed (at AckQueue.add → Subscriber.ack → processBatchMessage)
+2026-03-29T14:25:06.439Z | unhandledRejectionError: INVALID : Subscriber closed (at AckQueue.add → Subscriber.ack → processBatchMessage)
+2026-03-29T14:25:06.439Z | unhandledRejectionError: INVALID : Subscriber closed (at AckQueue.add → Subscriber.ack → processBatchMessage)
+2026-03-29T14:25:06.439Z | unhandledRejectionError: INVALID : Subscriber closed (at AckQueue.add → Subscriber.ack → processBatchMessage)
+```
+
+GCP query:
+```
+resource.type="k8s_container"
+resource.labels.container_name="clickhouse-indexing-bulk-actions-logs-v1-worker"
+jsonPayload.message=~"Subscriber closed"
+severity>=ERROR
+```
+
+[Open in GCP Log Explorer](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22clickhouse-indexing-bulk-actions-logs-v1-worker%22%0AjsonPayload.message%3D~%22Subscriber%20closed%22%0Aseverity%3E%3DERROR;timeRange=2026-03-29T14%3A20%3A00Z%2F2026-03-29T14%3A30%3A00Z?project=highlevel-backend)
+</details>
+
+### Evidence: Cloud Monitoring — PubSub Metrics
+
+<details>
+<summary>PubSub metrics show burst-and-drain pattern with healthy processing throughout</summary>
+
+> **What to look for:** The ack rate never dropped to zero — workers were processing the entire time. The backlog was caused by a publish burst exceeding momentary capacity, not by a processing failure. Zero nacks confirm no retry amplification.
+
+| Metric | Value | Source |
+|--------|-------|--------|
+| Peak undelivered messages | ~832,476 @ 13:33 UTC (19:03 IST) | Cloud Monitoring `num_undelivered_messages` |
+| Second wave peak | ~315k @ 14:06 UTC, ~202k @ 14:14 UTC | Cloud Monitoring |
+| Alert value | 202,870 | Slack alert message |
+| Oldest unacked age (peak) | ~504 seconds (~8.4 min) | Cloud Monitoring `oldest_unacked_message_age` |
+| Ack rate (per min) | 7k–149k (never zero) | Cloud Monitoring `ack_message_count` |
+| Nack count | Zero (no data points) | Cloud Monitoring `nack_requests` |
+| Sent/ack ratio | ~1.0x (9.08M sent / 9.05M ack) | Cloud Monitoring |
+| Backlog drain time | ~10-15 min per wave | Cloud Monitoring timeline |
+
+</details>
+
+### Evidence: Pod Resources — No Resource Pressure
+
+<details>
+<summary>Memory at 17% of limit, CPU at 36% of request — worker is I/O-bound</summary>
+
+> **What to look for:** These low resource numbers confirm the worker is I/O-bound (ClickHouse writes, network). CPU and memory are not the bottleneck. This is why the HPA's CPU-based scale-down is inappropriate for this workload.
+
+| Metric | Value | Limit/Request |
+|--------|-------|---------------|
+| Memory (peak) | ~193 MiB | 1,126 MiB (17%) |
+| CPU (peak) | ~0.178 cores | 0.5 cores (36%) |
+| Pod restarts | 0 | — |
+
+</details>
+
+## 4. Cross-Validation
+
+| Signal | Source 1 | Source 2 | Source 3 | Agree? |
+|--------|----------|----------|----------|--------|
+| HPA oscillation (5↔20) | Grafana pod count panel | GCP k8s_cluster HPA events | — | Yes |
+| CPU low → triggers scale-down | Grafana CPU by Pod (0.1-0.2) | GCP HPA reason: "cpu below target" | VictoriaMetrics (36% of request) | Yes |
+| Subscriber closed during scale-down | GCP ERROR logs (14:25:06Z) | GCP HPA event (14:25:05Z) | Kubelet DeadlineExceeded | Yes |
+| Backlog self-resolved | Cloud Monitoring (drains to <3k) | No ongoing Slack thread activity | — | Yes |
+| No pod restarts | VictoriaMetrics `kube_pod_container_status_restarts_total = 0` | No OOM in GCP logs | No heap errors | Yes |
+
+**Confidence: HIGH** — All 3 evidence sources (Grafana, GCP logs, Cloud Monitoring) agree on the causal chain. This is a known recurring pattern — identical root cause was found for the same subscription on 2026-03-27.
+
+## 5. Root Cause
+
+**HPA thrashing due to competing scaling metrics** causes recurring PubSub backlog spikes on `clickhouse-indexing-bulk-actions-logs-v1-events-sub`.
+
+### Causal Chain
+
+1. **Publish burst** → traffic spike to the topic → `num_undelivered_messages` jumps to ~832k
+2. **HPA scales up** (5→20 pods) based on `num_undelivered_messages` external metric
+3. Workers process the backlog rapidly (ack rate stays 7k-149k/min) → backlog drains
+4. **CPU is low** (0.1-0.2 cores) because the worker is I/O-bound (ClickHouse writes, not compute)
+5. **HPA scales down** aggressively (20→5 within 2 minutes) — reason: "cpu resource utilization below target"
+6. During scale-down, **pods are terminated while processing** → PubSub subscriber is closed
+7. **`INVALID: Subscriber closed`** errors → in-flight acks fail → messages become unacked again
+8. Brief backlog recurrence → HPA scales up again → **oscillation loop**
+9. Eventually self-resolves as the publish burst subsides and remaining pods catch up
+
+### Why the HPA Behavior is Wrong
+
+The HPA has two metrics:
+- `num_undelivered_messages` (external PubSub metric) — says "scale UP, there's a backlog"
+- CPU utilization (resource metric) — says "scale DOWN, CPU is low"
+
+For this **I/O-bound** worker, CPU will ALWAYS be low regardless of load. The CPU metric wins scale-down tiebreaks, causing pods to be removed while the backlog is still draining. This is a configuration issue, not a code issue.
 
 <details>
 <summary>Probable noise — transient errors during disruption (not root cause)</summary>
 
-| Time | Pattern | Why it's noise |
-|------|---------|----------------|
-| 09:07 IST | Metric registration errors (`PLATFORM_CORE_OBSERVABILITY`) | Expected post-restart behavior from observability SDK re-registering Prometheus metrics |
+| Time (IST) | Pattern | Why it's noise |
+|------------|---------|----------------|
+| 19:39:29 | `[PLATFORM_CORE_CLICKHOUSE] Clickhouse error` + auto-retry | Single transient ClickHouse network error, auto-retried successfully. Not correlated with the backlog onset. |
+| 19:57:15 | Kubelet: `Kill container failed` / `DeadlineExceeded` / `RST_STREAM` | Expected during aggressive pod termination. Side-effect of HPA scale-down, not independent issue. |
+| 19:56 | Kubelet: `RemoveStaleState` / CPUSet cleanup | Normal post-container-stop housekeeping. |
 
-No other noise patterns — this CronJob generates minimal logs.
 </details>
-
----
 
 ## 6. Action Items
 
-### For the alert
+### For the alert (prevent recurrence)
 
-| Priority | Action | Owner | Rationale |
-|----------|--------|-------|-----------|
-| Medium | Optimize `/marketplace/core/update/installation-counts` API to reduce 60-min response time | Marketplace team | Batch/stream processing instead of loading all installations in memory. Alert Debug Bot identified this as the code path in `apps/crm-marketplace/src/crons/update-installation-counts.cron.ts` |
-| Medium | Increase Envoy/Istio upstream timeout for this CronJob | Marketplace team | First attempt fails at ~7 min due to Envoy connection termination (503). The API needs ~60 min. Either increase the timeout or bypass Envoy for internal calls |
-| Low | Suppress PodRestartsAboveThreshold for CronJob workloads where threshold = 1 | Platform team | A single restart is expected behavior for CronJobs with `restartPolicy: OnFailure`. Consider raising threshold to 2 or excluding CronJob workloads |
-| Low | Validate OOM theory — increase memory limit and monitor | Marketplace team (Smitha → Ved) | Smitha's request in the alert thread. Even if the proximate cause is Envoy timeout, OOM may be a contributing factor on some runs |
+| Priority | Action | Rationale |
+|----------|--------|-----------|
+| **High** | Increase HPA `scaleDown.stabilizationWindowSeconds` to 300-600s | Prevents premature scale-down while backlog is still draining |
+| **High** | Remove CPU utilization metric from HPA, or set it to a very low target (e.g., 10%) | CPU will always be low for this I/O-bound worker; it causes incorrect scale-down decisions |
+| **Medium** | Add graceful PubSub shutdown handler: stop pulling → wait for in-flight acks → close subscriber | Prevents `Subscriber closed` errors during pod termination |
+| **Low** | Increase `minReplicas` to 8-10 | Reduces scale-down amplitude if this traffic pattern recurs daily |
 
 ### Separate observations
 
-| Item | Details |
-|------|---------|
-| API response time (~60 min) | The POST to `/marketplace/core/update/installation-counts` consistently takes 27-60 min across multiple occurrences (27.5 min on Mar 15, 36.6 min on Mar 14, 59.7 min on Mar 29). This suggests the API's processing time is growing over time as installation data increases |
-
----
+| Item | Detail |
+|------|--------|
+| Recurring pattern | Same alert fired 2 days ago (2026-03-27), same root cause. Also fired multiple times on 2026-03-28. HPA config fix would resolve all of these. |
+| Other CRM-bulk-actions alerts | Recent HeapOOM and PodRestart alerts on the same channel suggest this worker group has broader stability issues worth investigating. |
 
 ## 7. Deployment Details
 
-| Setting | Value |
-|---------|-------|
-| Workload type | CronJob |
-| Schedule | Daily ~03:30 UTC (09:00 IST) |
-| restartPolicy | OnFailure |
+| Config | Value |
+|--------|-------|
+| Container | clickhouse-indexing-bulk-actions-logs-v1-worker |
 | Cluster | workers-us-central-production-cluster |
-| Node pool | gke-workers-us-central-jobs-node-pool |
-| Team | CRM / Marketplace |
+| Namespace | default |
+| CPU request | 0.5 cores |
+| Memory limit | ~1,126 MiB |
+| HPA minReplicas | 5 |
+| HPA maxReplicas | 20 |
+| HPA metrics | `num_undelivered_messages` (external), CPU utilization (resource) |
+| Subscription | clickhouse-indexing-bulk-actions-logs-v1-events-sub |
 
----
+## 8. Cross-Validation Summary
 
-## 8. Alert Frequency
+| Source | Finding | Confidence |
+|--------|---------|------------|
+| Grafana (App Detailed View) | Pod count oscillates 5↔20, CPU low at 0.1-0.2 cores | High |
+| Cloud Monitoring (PubSub) | Backlog burst→drain pattern, healthy ack rate, zero nacks | High |
+| GCP Logs (k8s_cluster) | HPA events: scale-up on undelivered, scale-down on CPU | High |
+| GCP Logs (k8s_container) | Subscriber closed errors at scale-down timestamp | High |
+| GCP Kubelet | DeadlineExceeded during container kill — confirms aggressive termination | High |
+| Slack (Alert Correlator) | No correlated alerts in ±15 min, no recent deployment | Confirmed |
 
-This alert is a **known recurring false positive**:
-
-| Period | Occurrences |
-|--------|-------------|
-| Last 12 days (Mar 18-29) | 8 |
-| Since Feb 21 | 41+ messages in #alerts-crm |
-| Prior investigations | Mar 15 (completed), Mar 16 (completed) |
-
-Previous investigations confirmed identical behavior: first container killed by timeout, second attempt completes, Job reaches Completed status. No action was taken to fix the underlying issue.
+**Overall confidence: HIGH** — 5 independent sources agree. Known recurring pattern.
