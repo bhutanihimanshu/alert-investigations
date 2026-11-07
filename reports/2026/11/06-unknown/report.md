@@ -1,27 +1,27 @@
 # Alert Investigation: HighCPU
 
-**Investigation ID**: inv-2026-11-06-dbbb5098
-**Workload**: crm-leadconnector-standard-production
-**Container**: crm-leadconnector-standard-production
+**Investigation ID**: inv-2026-11-07-c33ecfcb
+**Workload**: crm-conversations-scoring-standard-production
+**Container**: crm-conversations-scoring-standard-production
 **Cluster**: N/A
 **Channel**: slack
-**Detected**: 2026-11-06T12:09:18.179Z
+**Detected**: 2026-11-06T12:09:19.264Z
 **Status**: delivering
 
 ## Root Cause
 
-**Summary**: Root cause and customer impact remain unknown. Verify Atlas CPU configuration 6abba97da2d9e8539a988f89, cancellation history, and measurements/logs for atlas-al19ir-shard-00-02.3typ3v.mongodb.net during 2026-11-06 11:46–11:56 UTC before attributing the alert to load or configuration.
+**Summary**: Undetermined. Threshold misconfiguration, testing, genuine AU CPU elevation and recovery remain unconfirmed. Read-only access to the exact AU rule, audit history and host measurements for 2026-11-06 11:21–12:49 UTC, plus a baseline, is required.
 **Confidence**: low
 **Category**: unknown
 
 ## Triage
 
-**Primary Anomaly**: error_spike
-**Details**: MongoDB primary assertions briefly reached 1.11/s versus a seven-day p95 of 0.60/s, returning to approximately 0.30/s by 11:55 UTC; their cause and impact are unknown. CPU, operation rate and available memory were within baseline ranges; CPU saturation was not observed. Kubernetes-targeted checks do not establish Atlas health. Neither historical candidate supports a causal match.
-**Anomalous**: Yes
-**Deep Dive Direction**: YES — The triage direction must change: the assertion spike and baselines belong to a different Atlas project and replica set. Investigate the actual alerting host, `atlas-al19ir-shard-00-02.3typ3v.mongodb.net`; CPU saturation remains unverified.
+**Primary Anomaly**: none
+**Details**: No CPU saturation or memory pressure observed on the MongoDB Atlas cluster. Alert-time normalized user CPU was 6.03–6.48%, near or below baseline medians of 6.05–7.27%; the reported 1% threshold is below baseline. Kubernetes and container-log checks did not establish applicable evidence. No historical candidate matches: the prior HighCPU investigation lacks an RCA, and neither GCE-wide errors nor Firestore latency is supported. Slack's AU alert-burst context is suggestive but not explicitly linked to this alert.
+**Anomalous**: No
+**Deep Dive Direction**: YES — Continue investigating the exact AU Atlas rule and host; the alert-rule direction remains appropriate. Triage’s “no anomaly” conclusion is unsupported because it used US metrics.
 
-Need the correct Atlas project's CPU alert configuration and history (threshold, units, evaluation window, cancellation reason), host metrics and logs/profiler records for 11:46–11:56 UTC, and original connection alert payloads to verify identities before correlating alerts. Root cause remains unknown.
+Need the live AU rule configuration and audit history, including threshold, aggregation, evaluation window and disable/delete events, plus exact AU host CPU metrics for November 6, 11:21–12:49 UTC and a baseline. Misconfiguration, testing and recovery remain unconfirmed.
 
 ## Cross-Validation
 
@@ -29,171 +29,107 @@ Need the correct Atlas project's CPU alert configuration and history (threshold,
 
 | Source | Finding | Agrees |
 |--------|---------|--------|
-| Atlas payloads retrieved through Grafana OnCall | CPU and connection notifications identify project 6abb2ee52a34b4d1ce4002ff and replica set atlas-al19ir-shard-0. They establish notification identity and timing, but not saturation, connection growth, or causality. | ✓ |
-| Slack alert threads | Corroborate notification delivery, but repeat the Atlas alerts rather than provide independent telemetry. No human diagnosis or recovery confirmation is present. | ✓ |
-| Layer 1 Grafana metrics | CPU, memory, operations, assertions and seven-day baselines belong to project 60803ad4b9f71f2ec1288526. Exclude them from conclusions about the alerting project. | ✗ |
-| Correct-project metrics and performance-advisor search | VictoriaMetrics returned no CPU series; Mimir returned HTTP 502. Performance-advisor search returned no matching records. These results leave host health and query behavior unverified. | ✗ |
-| Kubernetes and GCP container checks | Checks targeted a Kubernetes workload rather than the Atlas host; unavailable or empty results cannot establish database health. | ✗ |
+| Grafana metrics | Metrics describe US project 60803ad4b9f71f2ec1288526 and replica set atlas-uts4f1, not the target AU project 6abb2ee52a34b4d1ce4002ff and atlas-14m1ft host. They cannot establish AU health or threshold suitability. | ✗ |
+| Atlas deep dive | Exact AU host measurements, live rule configuration and audit history were unavailable. No causal mechanism was verified. | ✗ |
+| Slack | The thread was marked resolved without an RCA. AU alert-burst discussion provides context but does not explicitly identify this alert or its cause. | ✗ |
+| Kubernetes and GCP logs | Checks did not establish an applicable Kubernetes workload for this Atlas resource. Missing series and a timed-out log query provide no evidence of health or cause. | ✗ |
 
 ### Discrepancies
-- Triage's assertion spike, normal resource baselines and isAnomalous=true are unsupported for the actual alerting project.
-- Slack percentages and displayed threshold 1 are not verified against Atlas configuration; payload units are RAW and the evaluation window is unknown.
-- CPU OPEN and CANCELLED payloads retain the same value, 12.633181126331811. Cancellation does not demonstrate recovery, and payload update times do not establish measurement times.
-- Concurrent CPU and connection alerts do not establish a connection surge or a connection-to-CPU causal chain.
-- Falsification remains incomplete: exact-host CPU and connection baselines, alert configuration history and host logs are unavailable. Neither saturation nor threshold misconfiguration is established by two independent sources.
+- Triage's no-anomaly conclusion and comparison of the 1% threshold against baseline use the wrong region and hosts; AU anomaly status remains unknown.
+- OPEN and CANCELLED notifications reportedly retain the same CPU value. Cancellation and manual resolution do not demonstrate CPU recovery or rule changes.
+- No proposed cause has support from two independent, applicable sources.
+- Falsification remains pending: compare exact AU host CPU against its baseline and correlate rule audit events with alert onset and cancellation. Sustained abnormal AU CPU would challenge a threshold-only explanation; unchanged rule history would challenge a rule-change explanation.
 
 ## Deep Dive Findings
 
 {
-  "status": "partial",
-  "workload": "crm-leadconnector-standard-production",
+  "status": "blocked_on_atlas_access",
+  "summary": "No new AU rule, audit-history, or host-metric evidence was obtained. The US measurements cannot establish AU health; misconfiguration, testing, saturation and recovery remain unconfirmed.",
   "root_cause": null,
-  "causal_confidence": "low",
-  "summary": "Original connection payloads confirm the same Atlas project and replica set as the CPU alert. CPU saturation, cancellation reason and customer impact remain unverified.",
-  "verified_identity": {
-    "atlas_project_id": "6abb2ee52a34b4d1ce4002ff",
-    "replica_set": "atlas-al19ir-shard-0",
-    "cpu_host": "atlas-al19ir-shard-00-02.3typ3v.mongodb.net:27017"
+  "confidence": "low",
+  "target": {
+    "project_id": "6abb2ee52a34b4d1ce4002ff",
+    "alert_config_id": "6abba97da2d9e8539a988f89",
+    "host": "atlas-14m1ft-shard-00-02.3typ3v.mongodb.net:27017",
+    "metric": "NORMALIZED_SYSTEM_CPU_USER",
+    "window_utc": [
+      "2026-11-06T11:21:00Z",
+      "2026-11-06T12:49:00Z"
+    ]
   },
   "findings": [
     {
-      "finding": "All three connection alerts match the CPU alert's project and replica set; the primary matches its exact host.",
-      "metric": "CONNECTIONS_PERCENT",
-      "payload_units": "RAW",
-      "alert_config_id": "6abba97fa2d9e8539a989651",
-      "created_utc": "2026-11-06T11:51:10Z",
-      "status": "CANCELLED",
-      "updated_utc": "2026-11-06T12:09:32Z",
-      "hosts": [
-        {
-          "host": "atlas-al19ir-shard-00-02.3typ3v.mongodb.net:27017",
-          "role_in_notification": "Primary",
-          "value": 18.333333333333332,
-          "source": "https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/ICGQAW1PIEWY9"
-        },
-        {
-          "host": "atlas-al19ir-shard-00-01.3typ3v.mongodb.net:27017",
-          "role_in_notification": "Secondary",
-          "value": 7.933333333333334,
-          "source": "https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IQCCR5Y5DBL49"
-        },
-        {
-          "host": "atlas-al19ir-shard-00-00.3typ3v.mongodb.net:27017",
-          "role_in_notification": "Secondary",
-          "value": 8.4,
-          "source": "https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IK3NW9X3LQ5QK"
-        }
-      ],
-      "interpretation": "Identity and near-simultaneous alert creation are confirmed. These payloads do not establish a connection surge or a causal relationship with CPU."
+      "finding": "Direct Atlas access remains unavailable.",
+      "verified_this_pass": true,
+      "evidence": "Native browser discovery returned 'The browser access host is unavailable'. No Atlas connector, atlas/mongocli executable, or ATLAS/MONGODB-named environment variables were found."
     },
     {
-      "finding": "CPU OPEN and CANCELLED payloads retain the identical currentValue of 12.633181126331811 RAW.",
-      "alert_config_id": "6abba97da2d9e8539a988f89",
-      "created_utc": "2026-11-06T11:51:07Z",
-      "open_updated_utc": "2026-11-06T12:09:10Z",
-      "cancelled_updated_utc": "2026-11-06T12:19:43Z",
-      "displayed_threshold": 1,
-      "stored_threshold": null,
-      "evaluation_window": null,
-      "cancellation_reason": null,
-      "interpretation": "Cancellation is not evidence of CPU recovery. Payload timestamps do not establish the measurement timestamp.",
-      "source": "https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IXUA8F8FRI4KS"
+      "finding": "Stored investigation evidence contains no retrieved live rule or audit history.",
+      "verified_this_pass": true,
+      "evidence": "Reviewed state.json and prior worker outputs in debug.json. The read-only SQLite workload lookup returned only this running investigation, with no root-cause summary."
     },
     {
-      "finding": "Correct-project CPU query returned no series in prod-victoria-metrics; the same query against prod-mimir failed with HTTP 502.",
-      "window_utc": "2026-11-06T11:46:00Z/2026-11-06T11:56:00Z",
-      "interpretation": "Host CPU remains unavailable, not zero or normal. Previously reported assertions and baselines from the other project remain excluded."
-    },
-    {
-      "finding": "The Mongo performance-advisor Elasticsearch datasource returned zero matching records for the correct project or host during the requested window.",
-      "interpretation": "This does not establish absence of slow queries or errors; Atlas host logs and profiler records were not accessible."
+      "finding": "The notification threshold and cancellation do not establish why the alert occurred or ended.",
+      "evidence_source": "Prior worker output; not independently refreshed this pass",
+      "evidence": "OPEN and CANCELLED payloads reportedly retain the same 3.697411811731788 value against threshold 1. Cancellation occurred at 12:19:43 UTC; manual resolution followed at 12:48:05 UTC.",
+      "implication": "Neither CPU recovery nor rule disablement/deletion can be inferred."
     }
   ],
-  "metric_queries_used": [
-    "hardware_system_cpu_user_milliseconds{group_id=\"6abb2ee52a34b4d1ce4002ff\"}"
+  "missing_evidence": [
+    "Exact Atlas rule configuration: threshold, operator, aggregation, evaluation window and enabled state.",
+    "Atlas project audit events identifying rule creation, edits, disablement or deletion and their timestamps.",
+    "Exact AU host CPU measurements for the requested window and a comparable pre-incident baseline."
   ],
-  "log_queries_used": [
-    {
-      "datasource": "mongo-performance-advisor-alerts",
-      "index": "performance-advisor-alerts-mongo-db-*",
-      "query": {
-        "bool": {
-          "filter": [
-            {
-              "range": {
-                "timestamp": {
-                  "gte": "2026-11-06T11:46:00Z",
-                  "lte": "2026-11-06T11:56:00Z"
-                }
-              }
-            },
-            {
-              "query_string": {
-                "query": "\"6abb2ee52a34b4d1ce4002ff\" OR \"atlas-al19ir-shard-00-02.3typ3v.mongodb.net\""
-              }
-            }
-          ]
-        }
-      },
-      "matching_records": 0
-    }
-  ],
+  "next_action": "Provide read-only Atlas access or exports of the exact rule, project audit events and host measurements. These are required to distinguish threshold configuration changes from a genuine CPU anomaly.",
+  "log_queries_used": [],
   "log_explorer_urls": [],
-  "limitations": [
-    "Used validated stored-session Slack and Grafana skill CLIs. Connection threads contain automated invitations, not a human diagnosis.",
-    "No Atlas connector or installed Atlas CLI found. Native browser host was unavailable; native Chrome access was denied.",
-    "Atlas alert configuration, configuration-change history, cancellation reason, host logs and profiler records remain unavailable.",
-    "Parallel delegation failed because the executor could not load the subagent thread context."
+  "source_urls": [
+    "https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/ID8HKA9JNYE9V"
   ],
-  "next_actions": [
-    "Retrieve CPU configuration 6abba97da2d9e8539a988f89 and Atlas event history in project 6abb2ee52a34b4d1ce4002ff to verify threshold, units, evaluation window and cancellation reason.",
-    "Retrieve exact-host CPU measurements and existing logs/profiler records for 17:16–17:26 IST (11:46–11:56 UTC) on 2026-11-06.",
-    "Compare connection measurements with their baseline only after obtaining correct-project telemetry; do not infer saturation from these notifications."
-  ]
+  "production_changes": false,
+  "messages_posted": false
 }
 
 ## Evidence
 
 ### Dashboards (incident window)
-- [Normalized user CPU — crm-leadconnector-standard-production (primary below seven-day p95)](https://prod.grafana.leadconnectorhq.com/d/_s7Pjkb7z?orgId=1&var-Datasource=ber8nnhvgsjy8f&var-job=highlevel-prod-mongo-metrics&var-group_id=60803ad4b9f71f2ec1288526&var-cl_name=crm-leadconnector-standard-production&var-rs_nm=All&var-host=All&var-process_port=All&var-interval=5m&from=1793964060000&to=1793967660000&viewPanel=50)
-- [Available memory — crm-leadconnector-standard-production (stable during alert)](https://prod.grafana.leadconnectorhq.com/d/_s7Pjkb7z?orgId=1&var-Datasource=ber8nnhvgsjy8f&var-job=highlevel-prod-mongo-metrics&var-group_id=60803ad4b9f71f2ec1288526&var-cl_name=crm-leadconnector-standard-production&var-rs_nm=All&var-host=All&var-process_port=All&var-interval=5m&from=1793964060000&to=1793967660000&viewPanel=15)
+- [Normalized user CPU — crm-conversations-scoring-standard-production (no incident saturation)](https://prod.grafana.leadconnectorhq.com/d/_s7Pjkb7z?orgId=1&var-Datasource=ber8nnhvgsjy8f&var-job=highlevel-prod-mongo-metrics&var-group_id=60803ad4b9f71f2ec1288526&var-cl_name=crm-conversations-scoring-standard-production&var-rs_nm=atlas-uts4f1-shard-0&var-host=All&var-process_port=27017&var-interval=5m&from=1793964060000&to=1793967660000&viewPanel=50)
+- [Database requests — crm-conversations-scoring-standard-production (incident traffic within historical range)](https://prod.grafana.leadconnectorhq.com/d/W0lo7Gx7z?orgId=1&var-Datasource=ber8nnhvgsjy8f&var-job=highlevel-prod-mongo-metrics&var-group_id=60803ad4b9f71f2ec1288526&var-cl_name=crm-conversations-scoring-standard-production&var-rs_nm=atlas-uts4f1-shard-0&var-host=All&var-process_port=27017&var-Interval=5m&from=1793964060000&to=1793967660000&viewPanel=88)
 
 ### Logs
-- [Log Explorer query](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22crm-leadconnector-standard-production%22%0Aseverity%3E%3DERROR;timeRange=2026-11-06T11%3A46%3A00Z%2F2026-11-06T11%3A56%3A00Z?project=highlevel-backend)
+- [Log Explorer query](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%20resource.labels.container_name%3D%22crm-conversations-scoring-standard-production%22%20severity%3E%3DERROR;timeRange=2026-11-06T11%3A46%3A00Z%2F2026-11-06T11%3A56%3A00Z?project=highlevel-backend)
 
 ### Related incidents
-- [Concurrent primary connection alert at 18.3% — 6 Nov](https://gohighlevel.slack.com/archives/C097UPY34QJ/p1793967153823169)
-- [Concurrent secondary connection alert at 7.9% — 6 Nov](https://gohighlevel.slack.com/archives/C097UPY34QJ/p1793967121047649)
-- [Concurrent secondary connection alert at 8.4% — 6 Nov](https://gohighlevel.slack.com/archives/C097UPY34QJ/p1793967121931759)
+- [Team identifies sudden alert burst as AU-region alerts — 6 Nov](https://gohighlevel.slack.com/archives/C09JSAXKKG8/p1793967147273779)
 
 ## Investigation Timeline
 
 **Deep dive passes**: 3
 **Worker calls**: 13
 
-**Total worker time**: 785.7s
+**Total worker time**: 921.2s
 
 | Step | Type | Duration | Status |
 |------|------|----------|--------|
-| session_validation | decision | 16.2s | ✓ |
-| grafana-worker | worker | 92.7s | ✓ |
-| kubectl-worker | worker | 50.3s | ✓ |
-| log-explorer-worker | worker | 140.3s | ✓ |
-| slack-worker | worker | 64.5s | ✓ |
-| triage | worker | 15.2s | ✓ |
-| triage_llm_ranking | decision | 47.0s | ✓ |
-| deep_dive_pass_1 | worker | 108.2s | ✓ |
-| follow_up_check | decision | 12.0s | ✓ |
-| deep_dive_pass_2 | worker | 97.8s | ✓ |
-| follow_up_check | decision | 12.4s | ✓ |
-| deep_dive_pass_3 | worker | 108.3s | ✓ |
-| cross_validation | worker | 20.6s | ✓ |
+| session_validation | decision | 20.2s | ✓ |
+| grafana-worker | worker | 113.4s | ✓ |
+| kubectl-worker | worker | 162.3s | ✓ |
+| log-explorer-worker | worker | 209.5s | ✓ |
+| slack-worker | worker | 58.2s | ✓ |
+| triage | worker | 14.3s | ✓ |
+| triage_llm_ranking | decision | 46.7s | ✓ |
+| deep_dive_pass_1 | worker | 138.9s | ✓ |
+| follow_up_check | decision | 10.7s | ✓ |
+| deep_dive_pass_2 | worker | 71.4s | ✓ |
+| follow_up_check | decision | 10.1s | ✓ |
+| deep_dive_pass_3 | worker | 48.1s | ✓ |
+| cross_validation | worker | 17.5s | ✓ |
 
 ## Alert Context
 
 ```
-||CLUSTER - crm-leadconnector-standard-production, METRIC - NORMALIZED_SYSTEM_CPU_USER 🔺 *crm-leadconnector-standard-production* HIGH Type: Primary System: CPU (User) % has gone above 1 Current Value: 12.6 Created: 2026/11/06 11:51 GMT :package: Showing the last alert only out of 2 total. Visit <https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IXUA8F8FRI4KS|the plugin page> to see them all. CLUSTER - crm-leadconnector-standard-production, METRIC - NORMALIZED_SYSTEM_CPU_USER :small_red_triangle: *crm-leadconnector-standard-production* HIGH Type: Primary System: CPU (User) % has gone above 1 Current Value: 12.6 Created: 2026/11/06 11:51 GMT :package: Showing the last alert only out of 2 total. Visit <https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IXUA8F8FRI4KS|the plugin page> to see them all.
+||CLUSTER - crm-conversations-scoring-standard-production, METRIC - NORMALIZED_SYSTEM_CPU_USER 🔺 *crm-conversations-scoring-standard-production* HIGH Type: Primary System: CPU (User) % has gone above 1 Current Value: 3.7 Created: 2026/11/06 11:51 GMT :package: Showing the last alert only out of 2 total. Visit <https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/ID8HKA9JNYE9V|the plugin page> to see them all. CLUSTER - crm-conversations-scoring-standard-production, METRIC - NORMALIZED_SYSTEM_CPU_USER :small_red_triangle: *crm-conversations-scoring-standard-production* HIGH Type: Primary System: CPU (User) % has gone above 1 Current Value: 3.7 Created: 2026/11/06 11:51 GMT :package: Showing the last alert only out of 2 total. Visit <https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/ID8HKA9JNYE9V|the plugin page> to see them all.
 ```
 
 ---
-*Generated by Alert Investigation Orchestrator [Codex] at 2026-11-06T12:38:14.653Z*
+*Generated by Alert Investigation Orchestrator [Codex] at 2026-11-07T11:43:59.812Z*
