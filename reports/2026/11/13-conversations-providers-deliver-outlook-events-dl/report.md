@@ -1,27 +1,27 @@
 # Alert Investigation: PubSubUnackedMessages
 
-**Investigation ID**: inv-2026-11-13-88ac049f
+**Investigation ID**: inv-2026-11-13-e34535ac
 **Workload**: conversations-providers-deliver-outlook-events-dl
 **Container**: conversations-providers-deliver-outlook-events-dl
 **Cluster**: N/A
 **Channel**: slack
-**Detected**: 2026-11-12T19:02:30.892Z
+**Detected**: 2026-11-13T14:52:05.344Z
 **Status**: delivering
 
 ## Root Cause
 
-**Summary**: Outlook delivery HTTP 503 failures triggered explicit source-worker nacks and ongoing dead-letter accumulation, corroborated by worker logs and PubSub metrics. Concurrent Graph sendMail response errors support an upstream Graph failure path, but its exact cause remains unresolved. Recover matched Graph response diagnostics before selecting a provider-specific mitigation; assess replay after delivery failures recover.
+**Summary**: Failed Microsoft Graph sendMail calls were followed by Leadconnector POST /outlook/deliver HTTP 503 responses; worker retries and dead-letter forwarding are supported by logs and subscription metrics. The underlying Graph failure and the cause of the full DL backlog remain unresolved. No deployment cause was established.
 **Confidence**: medium
-**Category**: outlook_delivery_transient_failures_with_dead_letter_accumulation
+**Category**: upstream_dependency_failure_unresolved
 
 ## Triage
 
-**Primary Anomaly**: error_spike
-**Details**: Outlook source-worker HTTP 503 transient failures are driving explicit nacks and active dead-letter accumulation. During 18:30–19:15 UTC November 12, the source recorded 30,675 nack requests, 690 acknowledgments and 566 dead-lettered messages; a targeted sample contained 200 HTTP 503 errors across 78 message IDs. DL backlog reached 3,852 at 04:34 UTC November 13 despite OnCall resolution. Historical stale-DLQ and throughput-ceiling RCAs do not match ongoing failures; candidate 7 shares the nack-to-DLQ mechanism but not the demonstrated exception path. Grafana reports two ready source pods and zero restarts; kubectl verification was unavailable.
+**Primary Anomaly**: none
+**Details**: The Outlook dead-letter subscription has 4,558 undelivered messages, far above its seven-day median of 11, and the count was flat in the latest three hourly samples. No DL consumer is deployed, which is expected; the related main worker is healthy at 2/2 replicas with zero restarts. Available data does not establish when messages accumulated or whether dead-lettering is still active.
 **Anomalous**: Yes
-**Deep Dive Direction**: YES — The triage direction remains supported: Graph sendMail failures → Leadconnector HTTP 503 → retries → dead-letter accumulation. The underlying Graph cause remains unresolved; HTTP 503 does not distinguish Graph throttling from provider failure.
+**Deep Dive Direction**: YES — The triage direction needs updating: the evidence shows active dead-lettering during the backlog ramp, correlated with repeated HTTP 503s from `leadconnector-api` at `POST /outlook/deliver`. Focus on why that API returns 503 and how those failures lead to nacks and dead-lettering; the earlier check of DL age and main-subscription metrics has already provided useful evidence.
 
-Need a matched failure’s original Graph statusCode, error code/body, request ID, response headers and Retry-After, plus verification of deployed SDK/logger versions. The past learning reinforces validating causal links; it does not contradict this direction, but the logging gap must not be mistaken for the failure’s root cause.
+More data is needed to determine the root cause: inspect `leadconnector-api` logs and code for the failing requests, and check deployment or incident history around the backlog ramp. The exact cause of the 503s is not established.
 
 ## Cross-Validation
 
@@ -29,134 +29,127 @@ Need a matched failure’s original Graph statusCode, error code/body, request I
 
 | Source | Finding | Agrees |
 |--------|---------|--------|
-| PubSub metrics | During 18:30–19:15 UTC November 12, the source subscription recorded 30,675 nack requests and 566 dead-lettered messages. DL backlog continued growing to 3,852 by November 13 04:34 UTC. | ✓ |
-| Worker logs | A targeted sample contained 200 HTTP 503 transient-nack errors across 78 message IDs, overlapping the measured nack and dead-letter activity. | ✓ |
-| API logs and local source | API logs show Graph response-error stacks during the same window. Local code maps both Graph 429 and 5xx responses to HTTP 503; the original Graph response and deployed implementation remain unverified. | ✓ |
-| Grafana pod health | Two ready source-worker pods and zero restarts over 12 hours weaken the crash-loop hypothesis. Active dead-letter forwarding disproves a purely stale-DLQ explanation. | ✓ |
+| Cloud Monitoring / Grafana | The Outlook DL subscription reached 4,558 undelivered messages versus a seven-day median of 11. Main-subscription metrics for ack, nack, and expired deadlines were unavailable, so this source confirms the backlog but not its cause. | ✓ |
+| Leadconnector API production logs | Four matched message IDs show Microsoft Graph response errors followed 48–116 ms later by worker HTTP 503 responses. The Graph status, error body, request ID, and Retry-After were not logged. | ✓ |
+| Outlook worker logs and subscription metrics | Repeated delivery attempts and 566 dead-letter forwards were observed during 2026-11-12 18:30–19:15 UTC, alongside 690 acknowledgments. This supports retry and dead-letter forwarding, but does not establish the underlying Graph failure. | ✓ |
+| Kubernetes workload health | The related main worker was 2/2 replicas with zero restarts. No DL deployment or consumer was found, which is expected. No causal deployment or lifecycle event was established. | ✓ |
 
 ### Discrepancies
-- No request-level identity join independently links a worker nack to its original Graph response; throttling versus provider failure remains unresolved.
-- Grafana and log-investigation PubSub counts share the same underlying metric source and are not independent corroboration.
-- OnCall resolution conflicts with subsequent backlog growth; the reported alert value of 3,707 was not reproduced at its exact timestamp.
-- Kubernetes verification timed out. Deployment timing, deployed dependency versions, and DL consumer absence remain unconfirmed.
-- Missing deliveryAttempt fields do not rule out retries. The targeted log sample cannot establish population-wide error proportions or tenant abuse.
-- The longstanding oldest-message age is separate from the new backlog growth; missing Graph diagnostics are an observability gap, not a demonstrated failure cause.
+- Triage said active dead-lettering was correlated with repeated 503s; deep-dive evidence supports a failure path, but the queried windows differ and do not establish that these 503s explain the entire 4,558-message backlog.
+- The DL backlog was flat in the latest hourly samples, while the DL subscription showed no consumption in a separate queried window; current dead-lettering activity is undetermined.
+- Ack, nack, and expired-deadline metrics returned no series in the Layer 1 query, limiting independent validation of retry behavior.
+- The Graph failure cannot be classified as throttling or provider error from available logs.
 
 ## Deep Dive Findings
 
 {
-  "summary": "Graph sendMail failures remain supported, but the original Graph response and deployed dependency versions remain unresolved. New evidence shows local installed and lockfile logger versions differ, so local serializer behavior cannot establish the exact deployed implementation.",
+  "summary": "The Outlook DL backlog is being fed by failed Microsoft Graph sendMail calls: matching Graph errors are followed by Leadconnector HTTP 503 responses, worker retries, and dead-letter forwarding. The underlying Graph failure—throttling versus provider error—remains unresolved.",
   "confidence": {
-    "upstream_failure_path": "high, based on supplied triage and reverified Graph failure logs",
+    "failure_path": "high",
     "underlying_graph_cause": "unresolved",
-    "deployed_logger_attribution": "unverified"
+    "deployment_causation": "not established"
   },
-  "findings": [
-    "Requeried 10 error entries across five API pods at 19:02:57–19:03:01 UTC. All contain GraphErrorHandler.constructErrorFromResponse stacks and reduced error objects; none exposes the requested Graph diagnostics.",
-    "Production log resource labels identify servers-usc1-prd-cluster and ReplicaSet prefix leadconnector-api-569676c8d7. These identify the workload, not its dependency versions.",
-    "Local installed Graph SDK is 3.0.4 and logger is 3.7.1; yarn.lock resolves Graph SDK 3.0.4 and logger 3.12.2. package.json requests logger ^3.11.2.",
-    "Dockerfile copies node_modules from a separately tagged leadconnector-node-modules image. Verifying deployed dependencies requires the incident image and its base-image provenance or package metadata.",
-    "Local classification maps Graph 429 and Graph 5xx to HTTP 503. Observed application 503 responses therefore do not distinguish throttling from provider failure. Missing diagnostics are an observability limitation, not the demonstrated cause of delivery failure."
-  ],
-  "original_graph_response": {
-    "statusCode": null,
-    "code": null,
-    "body": null,
-    "requestId": null,
-    "responseHeaders": null,
-    "retryAfter": null,
-    "interpretation": "Not recovered from queried logs; absence does not establish that Microsoft omitted these fields."
+  "findings": {
+    "failure_path": "Outlook delivery worker → Leadconnector POST /outlook/deliver → Microsoft Graph /me/sendMail. Four matched message IDs had Graph response-error logs followed by worker HTTP 503 logs within 48–116 ms.",
+    "retry_and_dead_letter": {
+      "source_subscription": "conversations-providers-deliver-outlook-events",
+      "max_delivery_attempts": 5,
+      "minimum_backoff_seconds": 10,
+      "maximum_backoff_seconds": 600,
+      "evidence": "Repeated delivery attempts were observed. During 2026-11-12 18:30–19:15 UTC, the source subscription recorded 690 acknowledgments and 566 dead-letter forwards. The DL subscription showed no consumption in the queried 2026-11-13 02:30–04:35 UTC window."
+    },
+    "why_503_is_not_specific": "Leadconnector’s local Outlook error classifier maps both Graph 429 and Graph 5xx to HTTP 503. The matched production logs omit Graph status, error code/body, request ID, response headers, and Retry-After; therefore the 503 does not establish a Microsoft outage or throttling.",
+    "deployment_and_health": "The source worker and Leadconnector API remained ready with zero restart increase during the investigated 2026-11-12 17:00–19:15 UTC window. Pod creation preceded the error ramp by several hours. No matching lifecycle events or causal deployment/config change were established. The incident image and deployed dependency versions could not be verified.",
+    "negative_evidence": "No Keychain-specific exception was demonstrated. Local code comments mentioning KV2 are not evidence for this incident. The bounded sample covered 78 message IDs and 57 user IDs; it did not establish tenant concentration or abuse."
   },
-  "deployed_versions": {
-    "graph_sdk": null,
-    "logger": null,
-    "image_digest": null,
-    "blocker": "Read-only lookup of implicated pod leadconnector-api-569676c8d7-wjsfp in the correct servers cluster timed out connecting to the Kubernetes API."
-  },
-  "evidenceLogs": [
+  "evidence_logs": [
     {
-      "timestamp": "2026-11-12T19:02:59.767734527Z",
-      "insertId": "1osfouvf9aob6a",
-      "finding": "Graph response-error stack; requested original response fields absent."
+      "timestamp_utc": "2026-11-12T19:02:59.767734527Z",
+      "insert_id": "1osfouvf9aob6a",
+      "message_id": "lXx1pZSmO4gU2UYKcnJR",
+      "finding": "Leadconnector Graph response error; matching worker HTTP 503 followed at 19:02:59.867235422Z."
     },
     {
-      "timestamp": "2026-11-12T19:02:58.250930786Z",
-      "insertId": "ixcdxtf999hhq",
-      "finding": "Same Graph response-error stack and reduced error object."
+      "timestamp_utc": "2026-11-12T19:02:58.250930786Z",
+      "insert_id": "ixcdxtf999hhq",
+      "message_id": "Kp2noUDGk6KRfAqB5EJy",
+      "finding": "Leadconnector Graph response error; matching worker HTTP 503 followed at 19:02:58.298697710Z."
     },
     {
-      "timestamp": "2026-11-12T19:02:58.106895685Z",
-      "insertId": "1ggzz0lf2fynfx",
-      "finding": "Same failure signature on another API pod."
+      "timestamp_utc": "2026-11-12T19:02:58.106895685Z",
+      "insert_id": "1ggzz0lf2fynfx",
+      "message_id": "hqiXPH0PyG4AQgiiBUEz",
+      "finding": "Leadconnector Graph response error; matching worker HTTP 503 followed at 19:02:58.222632646Z."
     },
     {
-      "timestamp": "2026-11-12T19:02:57.321831226Z",
-      "insertId": "1grt0tkf8okyyw",
-      "finding": "Same failure signature on another API pod."
+      "timestamp_utc": "2026-11-12T19:02:57.321831226Z",
+      "insert_id": "1grt0tkf8okyyw",
+      "message_id": "Efa6QP9oJnUyFGNPC1OC",
+      "finding": "Leadconnector Graph response error; matching worker HTTP 503 followed at 19:02:57.391286373Z."
     }
   ],
   "log_queries_used": [
     {
-      "query": "resource.type=\"k8s_container\" resource.labels.container_name=\"leadconnector-api\" timestamp>=\"2026-11-12T19:02:57Z\" timestamp<=\"2026-11-12T19:03:01Z\" severity>=ERROR jsonPayload.message=~\"Failed to send mail to Outlook|OUTLOOK_SENDMAILS_OUTBOUND_FAILED\"",
-      "limit": 15,
-      "returned": 10
+      "purpose": "Leadconnector Outlook send errors",
+      "query": "resource.type=\"k8s_container\" resource.labels.container_name=\"leadconnector-api\" severity>=ERROR jsonPayload.message=\"Failed to send mail to Outlook\"",
+      "window_utc": "2026-11-12T18:53:00Z to 2026-11-12T19:03:00Z",
+      "limit": 30
     },
     {
-      "query": "resource.type=\"k8s_container\" resource.labels.container_name=\"leadconnector-api\" timestamp>=\"2026-11-12T19:02:57Z\" timestamp<=\"2026-11-12T19:03:01Z\" insertId=\"1osfouvf9aob6a\"",
-      "limit": 1,
-      "returned": 1,
-      "purpose": "Explicit projection of Graph diagnostics, response headers and version fields."
+      "purpose": "Source worker transient nacks",
+      "query": "resource.type=\"k8s_container\" resource.labels.container_name=\"conversations-providers-deliver-outlook-worker\" severity>=ERROR jsonPayload.message=\"[DELIVER_OUTLOOK_TRANSIENT_NACK]\"",
+      "window_utc": "2026-11-12T18:53:00Z to 2026-11-12T19:03:00Z",
+      "limit": 4
     }
   ],
-  "logExplorerUrls": [
-    "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22leadconnector-api%22%0AinsertId%3D%221osfouvf9aob6a%22;timeRange=2026-11-12T19%3A02%3A57Z%2F2026-11-12T19%3A03%3A01Z?project=highlevel-backend"
+  "log_explorer_urls": [
+    "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22leadconnector-api%22%0Aseverity%3E%3DERROR%0AjsonPayload.message%3D%22Failed%20to%20send%20mail%20to%20Outlook%22;timeRange=2026-11-12T18%3A53%3A00Z%2F2026-11-12T19%3A03%3A00Z?project=highlevel-backend",
+    "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22conversations-providers-deliver-outlook-worker%22%0Aseverity%3DERROR%0AjsonPayload.message%3D%22%5BDELIVER_OUTLOOK_TRANSIENT_NACK%5D%22;timeRange=2026-11-12T18%3A53%3A00Z%2F2026-11-12T19%3A03%3A00Z?project=highlevel-backend"
   ],
   "limitations": [
-    "Reused supplied histogram, PubSub and pod-health findings; did not repeat broad triage.",
-    "No new domain-identity join independently matched a worker nack to its original Graph response.",
-    "No causal deployment change, Microsoft outage or throttling diagnosis was established."
+    "Original Graph response diagnostics were not present in the queried logs.",
+    "The live incident image, deployed dependency versions, and a causal deployment change were not verified.",
+    "No new orchestrator investigation was launched and no production changes or messages were made."
   ],
-  "next_evidence_needed": "Incident-image dependency metadata and a failed send's allowlisted Graph status, error code/body, request-id, client-request-id and Retry-After, obtained from retained provider diagnostics or response-level instrumentation.",
-  "access": "Existing gcloud CLI authentication, read-only Kubernetes queries and local source inspection. No production changes, messages or new orchestrator investigation."
+  "next_evidence_needed": "A retained failed-send record or provider diagnostic with Graph status, error code/body, request ID, response headers, and Retry-After; incident image metadata would help verify the deployed logger and SDK."
 }
 
 ## Evidence
 
 ### Dashboards (incident window)
-- [DLQ backlog — conversations-providers-deliver-outlook-events-dl (growth to 3,852)](https://prod.grafana.leadconnectorhq.com/d/ffex8olsxa9kwc?orgId=1&var-datasource=LI7N5rfVz&var-projectId=highlevel-backend&var-subscriptionId=conversations-providers-deliver-outlook-events-dl&from=1794502800000&to=1794544520073&viewPanel=1)
-- [Nacks — conversations-providers-deliver-outlook-events (elevated retries)](https://prod.grafana.leadconnectorhq.com/d/ffex8olsxa9kwc?orgId=1&var-datasource=LI7N5rfVz&var-projectId=highlevel-backend&var-subscriptionId=conversations-providers-deliver-outlook-events&from=1794502800000&to=1794544520073&viewPanel=6)
+- [Undelivered messages — conversations-providers-deliver-outlook-events-dl (7-day rise to 4,558; panel 1)](https://prod.grafana.leadconnectorhq.com/d/ffex8olsxa9kwc/conversations-workers-health-overview?orgId=1&var-datasource=LI7N5rfVz&var-projectId=highlevel-backend&var-subscriptionId=conversations-providers-deliver-outlook-events-dl&from=1793976856000&to=1794581656000&viewPanel=1)
 
 ### Logs
-- [Log Explorer query](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22conversations-providers-deliver-outlook-worker%22%0Aseverity%3E%3DERROR%0AjsonPayload.message%3D%22%5BDELIVER_OUTLOOK_TRANSIENT_NACK%5D%22;timeRange=2026-11-12T18%3A53%3A00Z%2F2026-11-12T19%3A03%3A00Z?project=highlevel-backend)
-- [Log Explorer query](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22leadconnector-api%22%0AinsertId%3D%221osfouvf9aob6a%22;timeRange=2026-11-12T19%3A02%3A57Z%2F2026-11-12T19%3A03%3A01Z?project=highlevel-backend)
+- [Log Explorer query](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22conversations-providers-deliver-outlook-events-dl%22%0Aseverity%3E%3DERROR%0AjsonPayload.message%3D~%22error%7Cfailed%7Ctimeout%7CECONNREFUSED%7CDEADLINE_EXCEEDED%22;timeRange=2026-11-13T14%3A47%3A00Z%2F2026-11-13T14%3A57%3A00Z?project=highlevel-backend)
+- [Log Explorer query](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22leadconnector-api%22%0Aseverity%3E%3DERROR%0AjsonPayload.message%3D%22Failed%20to%20send%20mail%20to%20Outlook%22;timeRange=2026-11-12T18%3A53%3A00Z%2F2026-11-12T19%3A03%3A00Z?project=highlevel-backend)
+- [Log Explorer query](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22conversations-providers-deliver-outlook-worker%22%0Aseverity%3DERROR%0AjsonPayload.message%3D%22%5BDELIVER_OUTLOOK_TRANSIENT_NACK%5D%22;timeRange=2026-11-12T18%3A53%3A00Z%2F2026-11-12T19%3A03%3A00Z?project=highlevel-backend)
 
 ## Investigation Timeline
 
-**Deep dive passes**: 3
-**Worker calls**: 12
+**Deep dive passes**: 2
+**Worker calls**: 11
 
-**Total worker time**: 731.9s
+**Total worker time**: 1098.6s
 
 | Step | Type | Duration | Status |
 |------|------|----------|--------|
-| session_validation | decision | 15.2s | ✓ |
-| grafana-worker | worker | 84.0s | ✓ |
-| kubectl-worker | worker | 97.3s | ✓ |
-| log-explorer-worker | worker | 85.5s | ✓ |
-| triage | worker | 14.7s | ✓ |
-| triage_llm_ranking | decision | 26.0s | ✓ |
-| deep_dive_pass_1 | worker | 196.4s | ✓ |
-| follow_up_check | decision | 11.4s | ✓ |
-| deep_dive_pass_2 | worker | 75.6s | ✓ |
-| follow_up_check | decision | 10.5s | ✓ |
-| deep_dive_pass_3 | worker | 98.5s | ✓ |
-| cross_validation | worker | 17.0s | ✓ |
+| session_validation | decision | 18.6s | ✓ |
+| grafana-worker | worker | 92.1s | ✓ |
+| kubectl-worker | worker | 236.3s | ✓ |
+| log-explorer-worker | worker | 109.1s | ✓ |
+| triage | worker | 14.6s | ✓ |
+| triage_llm_ranking | decision | 23.8s | ✓ |
+| deep_dive_pass_1 | worker | 393.3s | ✓ |
+| follow_up_check | decision | 10.2s | ✓ |
+| deep_dive_pass_2 | worker | 172.8s | ✓ |
+| follow_up_check | decision | 11.7s | ✓ |
+| cross_validation | worker | 16.1s | ✓ |
 
 ## Alert Context
 
 ```
-||*<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IHSLQ94S2LWX9|#139723 Pubsub Unacked Messages above 500>* via CRM-conversations (*<https://prod.grafana.leadconnectorhq.com/alerting/grafana/f7ce4c3a-4497-4dbf-aa4e-9a751067fe04/view?orgId=1|source>*) AlertValues: Doc for this alert: http://platform.docs/alerts/pubsub-unacked-messages/ Hey, looks like the Unacked messages in the below subscription has gone above the configured threshold. :chart_with_upwards_trend: Subscription: conversations-providers-deliver-outlook-events-dl Unacked Messages: 3707 GCP Link: https://console.cloud.google.com/cloudpubsub/subscription/detail/conversations-providers-deliver-outlook-events-dl?project=highlevel-backend :package: Showing the last alert only out of 17 total. Visit <https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IHSLQ94S2LWX9|the plugin page> to see them all. *<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IHSLQ94S2LWX9|#139723 Pubsub Unacked Messages above 500>* via CRM-conversations (*<https://prod.grafana.leadconnectorhq.com/alerting/grafana/f7ce4c3a-4497-4dbf-aa4e-9a751067fe04/view?orgId=1|source>*) AlertValues: Doc for this alert: <http://platform.docs/alerts/pubsub-unacked-messages/> Hey, looks like the Unacked messages in the below subscription has gone above the configured threshold. :chart_with_upwards_trend: Subscription: conversations-providers-deliver-outlook-events-dl Unacked Messages: 3707 GCP Link: <https://console.cloud.google.com/cloudpubsub/subscription/detail/conversations-providers-deliver-outlook-events-dl?project=highlevel-backend> :package: Showing the last alert only out of 17 total. Visit <https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IHSLQ94S2LWX9|the plugin page> to see them all.
+||*<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/INTLIPK5THGB8|#139801 Pubsub Unacked Messages above 500>* via CRM-conversations (*<https://prod.grafana.leadconnectorhq.com/alerting/grafana/f7ce4c3a-4497-4dbf-aa4e-9a751067fe04/view?orgId=1|source>*) AlertValues: Doc for this alert: <http://platform.docs/alerts/pubsub-unacked-messages/> Hey, looks like the Unacked messages in the below subscription has gone above the configured threshold. :chart_with_upwards_trend: Subscription: conversations-providers-deliver-outlook-events-dl Unacked Messages: 4558 GCP Link: <https://console.cloud.google.com/cloudpubsub/subscription/detail/conversations-providers-deliver-outlook-events-dl?project=highlevel-backend> *<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/INTLIPK5THGB8|#139801 Pubsub Unacked Messages above 500>* via CRM-conversations (*<https://prod.grafana.leadconnectorhq.com/alerting/grafana/f7ce4c3a-4497-4dbf-aa4e-9a751067fe04/view?orgId=1|source>*) AlertValues: Doc for this alert: <http://platform.docs/alerts/pubsub-unacked-messages/> Hey, looks like the Unacked messages in the below subscription has gone above the configured threshold. :chart_with_upwards_trend: Subscription: conversations-providers-deliver-outlook-events-dl Unacked Messages: 4558 GCP Link: <https://console.cloud.google.com/cloudpubsub/subscription/detail/conversations-providers-deliver-outlook-events-dl?project=highlevel-backend>
 ```
 
 ---
-*Generated by Alert Investigation Orchestrator [Codex] at 2026-11-13T04:43:38.443Z*
+*Generated by Alert Investigation Orchestrator [Codex] at 2026-11-13T15:08:11.926Z*
