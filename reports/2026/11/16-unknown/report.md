@@ -1,27 +1,27 @@
 # Alert Investigation: Unknown
 
-**Investigation ID**: inv-2026-11-16-bd40001d
+**Investigation ID**: inv-2026-11-16-02dfa227
 **Workload**: CRM-conversations
 **Container**: CRM-conversations
-**Cluster**: conversations-search
+**Cluster**: crm-messages-search
 **Channel**: slack
-**Detected**: 2026-11-16T08:54:13.149Z
+**Detected**: 2026-11-16T09:02:04.914Z
 **Status**: delivering
 
 ## Root Cause
 
-**Summary**: The Yellow transition and concurrent OpenSearch timeouts are supported by multiple sources, but the initiating cause is unconfirmed. A node-membership or shard-allocation event and workload-related latency remain hypotheses. Shard allocation details and AWS domain events are needed to distinguish them.
+**Summary**: Multi-node free-storage loss is supported by Grafana metrics and concurrent Slack alerts. Shard relocation coincided with the decline, but the initiating event and the relative contributions of shard movement and index growth remain unknown.
 **Confidence**: low
-**Category**: Unconfirmed OpenSearch cluster health event
+**Category**: Unconfirmed OpenSearch storage depletion
 
 ## Triage
 
 **Primary Anomaly**: none
-**Details**: The conversations-search OpenSearch cluster transitioned from its usual Green status to Yellow near 08:54 UTC. Slack reports a second concurrent Yellow alert and later recovery; the cause remains unconfirmed. No alert-window CPU or JVM samples were available, Kubernetes pod data could not be retrieved, and the queried application logs returned no errors. A past mapping-related Yellow incident is not confirmed by current evidence.
+**Details**: OpenSearch free storage is below the 100,000 MB threshold: the alert reports 83,940.64 MB, and the latest Grafana sample is 66,980 MB. CPU is low and indexing rate is below its seven-day median. Slack reports a near-simultaneous low-storage alert on another node and a same-day RCA citing elevated write and search load, but that cause is not independently verified. Historical candidates do not establish a matching RCA for this storage alert.
 **Anomalous**: Yes
-**Deep Dive Direction**: YES. The triage direction is still correct: investigate node membership, shard allocation and unassigned replicas, plus AWS/OpenSearch domain events and availability-zone signals. Yellow recovered, and the brief node-count decrease coincided with it; indexing timeouts overlapped but don’t establish the cause.
+**Deep Dive Direction**: YES. The triage direction is still correct: investigate the time-aligned storage trends across both nodes and the domain, shard allocation and disk growth, workload and latency metrics, and AWS domain events or changes. Shard relocation is a plausible lead, but the evidence does not establish what triggered it or whether it explains the full storage loss.
 
-More data is needed to determine root cause: shard allocation state and replica identities, AWS/OpenSearch domain events or health signals, and relevant indexing/workload metrics. Verify the indexing worker’s dependency usage before recommending fixes based on its timeouts.
+More data is needed to determine root cause: AWS domain events and CloudTrail change history for Nov 11 and 16; shard allocation, per-index storage, and node filesystem data; and producer or backfill throughput with confirmation of any scheduled or manual jobs.
 
 ## Cross-Validation
 
@@ -29,134 +29,123 @@ More data is needed to determine root cause: shard allocation state and replica 
 
 | Source | Finding | Agrees |
 |--------|---------|--------|
-| Grafana | The conversations-search cluster transitioned from its usual Green status to Yellow around 08:49 UTC. The cluster-status series ended at 08:54 UTC; CPU and JVM samples were unavailable during the alert window. | ✓ |
-| GCP logs and source review | Multiple indexing-worker pods logged 30-second OpenSearch request timeouts from 08:44 UTC onward. The worker uses OpenSearch bulk and get operations, confirming impact, but the timeouts do not establish what caused Yellow. | ✓ |
-| Slack | A second Yellow alert fired for the same cluster, and a later update reported recovery. The cause remained unconfirmed; unassigned replicas were only a possibility. | ✓ |
-| Kubernetes and AWS | Pod state, shard allocation details, AWS domain events, and availability-zone signals were unavailable, leaving the initiating event unverified. | ✓ |
+| Grafana CloudWatch-backed metrics | Free storage on the alert node fell sharply and was below the 100,000 MB threshold; CPU was low and the latest indexing rate was below its seven-day median. | ✓ |
+| Slack alert context | A near-simultaneous low-storage alert reported another node below threshold, supporting a multi-node issue. A Slack RCA attributes strain to high write and search load, but that cause was not independently verified. | ✓ |
+| Grafana shard and latency metrics | Shard relocations peaked while free storage declined, and latency rose. Initializing shards remained at zero and node count stayed at 93; relocation is a plausible mechanism, not a confirmed trigger. | ✓ |
+| GCP indexing-worker logs | Sampled warnings show slow search operations and successful bulk batches. They support degraded operation but do not establish a write surge or explain the storage decline. | ✗ |
 
 ### Discrepancies
-- Indexing-worker timeouts were observed before the reported Yellow samples, but available evidence cannot determine whether they preceded the underlying cluster event or contributed to it.
-- Slack reports recovery, while the queried Grafana cluster-status series ended at 08:54 UTC and does not independently verify recovery timing.
+- The alert reports 83,940.64 MB free at 08:55 UTC, while the latest Grafana sample was 66,980 MB at 08:13 UTC.
+- Slack attributes strain to high write and search load, but sampled Grafana rates were below their seven-day medians and logs do not measure total write volume.
+- AWS domain events, CloudTrail changes, shard allocation, per-index storage, and producer or backfill throughput were not retrieved.
 
 ## Deep Dive Findings
 
 {
   "alert": {
-    "name": "AWS ES Cluster Health Yellow",
-    "cluster": "conversations-search",
-    "alert_time_utc": "2026-11-16T08:54:13Z"
+    "type": "AWS ES Free Storage Space",
+    "domain": "crm-messages-search",
+    "node_id": "gjjwJfeMS8C-EF-UiiMXlg",
+    "started_at_utc": "2026-11-16T09:01:34Z",
+    "reported_free_storage_mb": 83940.64,
+    "threshold_free_storage_mb": 100000
   },
   "findings": [
     {
-      "finding": "Indexing-worker OpenSearch request timeouts were already occurring before the observed Yellow interval.",
-      "evidence": "Read-only GCP log queries found 30-second Request Timeout errors from multiple indexing-worker pods between 08:44 and 08:48:59 UTC, before the reported Yellow samples around 08:49 UTC. This establishes early workload impact, but not what initiated it.",
-      "confidence": "medium",
-      "source_urls": [
-        "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22conversations-elastic-indexing-worker%22%0Atimestamp%3E%3D%222026-11-16T08%3A44%3A00Z%22%0Atimestamp%3C%3D%222026-11-16T08%3A49%3A00Z%22%0Aseverity%3E%3DERROR%0AjsonPayload.error.errorMessage%3D%22Request%20Timeout%20after%2030000ms%22;timeRange=2026-11-16T08%3A44%3A00Z%2F2026-11-16T08%3A49%3A00Z?project=highlevel-backend",
-        "https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-domainName=conversations-search&var-clientId=696084496265&var-datasource=4PeY_YyVz&from=1794817453000&to=1794821053000&viewPanel=59"
-      ]
-    },
-    {
-      "finding": "The worker uses Elasticsearch bulk and get operations, so these timeouts are consistent with OpenSearch impact; they do not prove the worker caused Yellow.",
-      "evidence": "The prior source review verified those dependency calls. Timeouts were present before the observed Yellow samples and continued afterward; request volume, shard allocation, and domain events were unavailable to distinguish a shared workload trigger from cluster degradation.",
-      "confidence": "medium",
-      "source_urls": [
-        "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22conversations-elastic-indexing-worker%22%0Atimestamp%3E%3D%222026-11-16T08%3A44%3A00Z%22%0Atimestamp%3C%3D%222026-11-16T09%3A10%3A00Z%22%0Aseverity%3E%3DERROR;timeRange=2026-11-16T08%3A44%3A00Z%2F2026-11-16T09%3A10%3A00Z?project=highlevel-backend",
-        "https://gohighlevel.slack.com/archives/C09JSAXKKG8/p1794819257672559?thread_ts=1794819253198779"
-      ]
-    },
-    {
-      "finding": "The initiating cluster event remains unconfirmed.",
-      "evidence": "The supplied metrics show a brief node-count dip concurrent with Yellow and subsequent recovery; master reachability remained 1. No shard identities, unassigned-replica details, AWS domain events, or availability-zone signals were retrieved. AWS CLI was unavailable, and the browser access host was unavailable in this executor.",
+      "finding": "The storage breach is confirmed on multiple nodes. On the alert node, free storage fell from about 423,677 MB at 00:00 UTC to 66,980 MB by 08:13 UTC; the alert’s 08:55 value is 83,940.64 MB. A second node also fell below threshold during the alert window.",
       "confidence": "high",
-      "source_urls": [
-        "https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-domainName=conversations-search&var-clientId=696084496265&var-datasource=4PeY_YyVz&from=1794818340000&to=1794820200000&viewPanel=6"
-      ]
+      "evidence_source": "Grafana CloudWatch-backed FreeStorageSpace metrics and concurrent Slack alert",
+      "url": "https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-datasource=4PeY_YyVz&var-region=default&var-domainName=crm-messages-search&var-clientId=696084496265&var-nodeId=gjjwJfeMS8C-EF-UiiMXlg&from=1794214800000&to=1794821400000&viewPanel=39"
     },
     {
-      "finding": "The current evidence does not support the historical mapping-error explanation.",
-      "evidence": "The targeted mapping/mapper/strict_dynamic error query returned zero entries for the indexing worker in the alert window.",
+      "finding": "Shard relocation is a plausible mechanism, not a confirmed cause. Relocations peaked near 160 around 06:00 UTC while free storage fell sharply; initializing shards remained at zero and node count stayed at 93. A similar coincident pattern was reported on Nov 11. Available evidence does not identify what initiated relocation or show whether it explains the full storage loss.",
       "confidence": "medium",
-      "source_urls": []
+      "evidence_source": "Grafana relocation, initializing-shard, node-count, and free-storage metrics from the prior pass",
+      "url": "https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-datasource=4PeY_YyVz&var-region=default&var-domainName=crm-messages-search&var-clientId=696084496265&var-nodeId=All&from=1794807000000&to=1794820500000&viewPanel=21"
+    },
+    {
+      "finding": "The available domain metrics do not show a sustained indexing or search surge: indexing and search rates were below their seven-day medians in the cited samples. Latency rose around 06:00 UTC, and indexing-worker logs later showed slow bulk-operation warnings alongside successful batches. This supports degraded operation but does not establish a write surge or explain the storage decline.",
+      "confidence": "medium",
+      "evidence_source": "Grafana domain metrics and projected GCP indexing-worker logs",
+      "url": "https://console.cloud.google.com/logs/query?project=highlevel-backend&query=resource.type%3D%22k8s_container%22%20AND%20resource.labels.container_name%3D%22conversations-elastic-indexing-messages-worker%22%20AND%20timestamp%3E%3D%222026-11-16T05%3A30%3A00Z%22%20AND%20timestamp%3C%3D%222026-11-16T09%3A15%3A00Z%22%20AND%20jsonPayload.message%3D%22Elasticsearch%20query%20latency%20is%20too%20high%20for%20Conversation%20Messages%20Search%22&timeRange=2026-11-16T05%3A30%3A00.000Z%2F2026-11-16T09%3A15%3A00.000Z"
+    },
+    {
+      "finding": "Root cause remains unconfirmed. The supplied Slack RCA attributes strain to elevated write and search load but does not independently verify that cause; it also reports no deploy or scheduled-job correlation. AWS domain events, CloudTrail changes, shard-to-node allocation, per-index storage growth, and producer/backfill throughput were not retrieved. The local executor has no AWS CLI, so those AWS checks could not be performed here.",
+      "confidence": "low",
+      "evidence_source": "Prior investigation results, supplied Slack context, and local tool availability",
+      "url": "https://gohighlevel.slack.com/archives/C09JSAXKKG8/p1794819915088539?thread_ts=1794819915.088539"
     }
+  ],
+  "log_queries_used": [
+    {
+      "query": "resource.type=\"k8s_container\" AND resource.labels.container_name=\"conversations-elastic-indexing-messages-worker\" AND timestamp>=\"2026-11-16T05:30:00Z\" AND timestamp<=\"2026-11-16T09:15:00Z\" AND jsonPayload.message=\"Elasticsearch query latency is too high for Conversation Messages Search\"",
+      "result": "Prior pass returned warnings at 09:11–09:14 UTC, with sampled latency about 5.3–30.1 seconds."
+    },
+    {
+      "query": "resource.type=\"k8s_container\" AND resource.labels.container_name=\"conversations-elastic-indexing-messages-worker\" AND timestamp>=\"2026-11-16T05:30:00Z\" AND timestamp<=\"2026-11-16T09:15:00Z\" AND jsonPayload.message=~\"(?i)(bulk|index|write|processed|publish|batch|documents)\"",
+      "result": "Prior bounded sample contained successful batches of 72–86 items and a bulk completion message; it does not measure total write volume."
+    },
+    {
+      "query": "resource.type=\"k8s_container\" AND resource.labels.container_name=\"conversations-message-search-backfill-conversation-worker\" AND timestamp>=\"2026-11-16T05:30:00Z\" AND timestamp<=\"2026-11-16T09:15:00Z\" AND jsonPayload.message=~\"(?i)(bulk|index|write|processed|publish|batch|documents)\"",
+      "result": "Prior pass returned no matching records."
+    }
+  ],
+  "log_explorer_urls": [
+    "https://console.cloud.google.com/logs/query?project=highlevel-backend&query=resource.type%3D%22k8s_container%22%20AND%20resource.labels.container_name%3D%22conversations-elastic-indexing-messages-worker%22%20AND%20timestamp%3E%3D%222026-11-16T05%3A30%3A00Z%22%20AND%20timestamp%3C%3D%222026-11-16T09%3A15%3A00Z%22%20AND%20jsonPayload.message%3D%22Elasticsearch%20query%20latency%20is%20too%20high%20for%20Conversation%20Messages%20Search%22&timeRange=2026-11-16T05%3A30%3A00.000Z%2F2026-11-16T09%3A15%3A00.000Z"
   ],
   "root_cause": {
     "status": "unconfirmed",
-    "assessment": "Worker timeouts predated the observed Yellow samples, making them evidence of concurrent OpenSearch or workload impact rather than proof of cause. The node-count decrease and Yellow recovery are consistent with a transient membership or shard-allocation event, but the available data cannot identify the initiating event.",
-    "hypotheses_not_confirmed": [
-      "Node departure or shard reallocation temporarily left replicas unassigned.",
-      "Indexing workload or another source of cluster latency contributed to the transition."
-    ],
+    "confidence": "low",
+    "assessment": "Multi-node free-storage loss is established. Relocation coincided with the decline, while workload metrics do not establish a sustained traffic surge. The initiating event and the contribution of shard movement versus index growth remain unknown.",
     "next_evidence_needed": [
-      "OpenSearch cluster health, shard allocation explain, and unassigned replica identities for approximately 08:44–09:00 UTC.",
-      "AWS OpenSearch domain events, CloudTrail changes, and availability-zone or AWS Health signals for the same interval.",
-      "Indexing rate, request latency, and worker error counts before and during Yellow."
-    ]
-  },
-  "log_queries_used": [
-    {
-      "purpose": "Check whether indexing timeouts preceded the observed Yellow interval",
-      "query": "resource.type=\"k8s_container\" AND resource.labels.container_name=\"conversations-elastic-indexing-worker\" AND timestamp>=\"2026-11-16T08:44:00Z\" AND timestamp<=\"2026-11-16T08:49:00Z\" AND severity>=ERROR AND jsonPayload.error.errorMessage=\"Request Timeout after 30000ms\"",
-      "result": "Projected samples showed 30-second request timeouts across multiple worker pods from 08:44:00 through 08:48:59 UTC.",
-      "url": "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22conversations-elastic-indexing-worker%22%0Atimestamp%3E%3D%222026-11-16T08%3A44%3A00Z%22%0Atimestamp%3C%3D%222026-11-16T08%3A49%3A00Z%22%0Aseverity%3E%3DERROR%0AjsonPayload.error.errorMessage%3D%22Request%20Timeout%20after%2030000ms%22;timeRange=2026-11-16T08%3A44%3A00Z%2F2026-11-16T08%3A49%3A00Z?project=highlevel-backend"
-    },
-    {
-      "purpose": "Inspect indexing-worker errors across the broader alert window",
-      "query": "resource.type=\"k8s_container\" AND resource.labels.container_name=\"conversations-elastic-indexing-worker\" AND timestamp>=\"2026-11-16T08:44:00Z\" AND timestamp<=\"2026-11-16T09:10:00Z\" AND severity>=ERROR",
-      "result": "Prior projected results showed 30-second bulk update/preparation timeouts through 09:00:56 UTC; the 08:54 sample also contained the nested error field `jsonPayload.error.errorMessage`.",
-      "url": "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22conversations-elastic-indexing-worker%22%0Atimestamp%3E%3D%222026-11-16T08%3A44%3A00Z%22%0Atimestamp%3C%3D%222026-11-16T09%3A10%3A00Z%22%0Aseverity%3E%3DERROR;timeRange=2026-11-16T08%3A44%3A00Z%2F2026-11-16T09%3A10%3A00Z?project=highlevel-backend"
-    }
-  ],
-  "limitations": [
-    "Shard allocation state and unassigned replica identities were not retrieved.",
-    "AWS domain events, CloudTrail, AWS Health, and availability-zone signals were not verified.",
-    "No alert-window CPU or JVM samples were available; Kubernetes pod state was unavailable.",
-    "The before-Yellow timeout check used limited samples and does not establish the start or rate of the timeout pattern."
-  ]
+      "AWS OpenSearch domain events, service-software update history, CloudTrail changes, and AWS Health signals for Nov 11 and Nov 16.",
+      "Time-aligned shard allocation, per-index store size, and node filesystem data.",
+      "Producer and backfill throughput, including confirmation of scheduled or manual jobs."
+    ],
+    "recommended_action": "Have the domain owner verify headroom on affected nodes and inspect domain events and shard allocation before choosing a mitigation."
+  }
 }
 
 ## Evidence
 
 ### Dashboards (incident window)
-- [Cluster yellow status — conversations-search (yellow began in final two 5-minute samples)](https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-domainName=conversations-search&var-clientId=696084496265&var-datasource=4PeY_YyVz&from=1794817453000&to=1794821053000&viewPanel=59)
-- [CPU by node — conversations-search (7-day baseline; no samples in alert window)](https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-domainName=conversations-search&var-clientId=696084496265&var-datasource=4PeY_YyVz&from=1794216253000&to=1794821053000&viewPanel=66)
-- [Aws Elasticsearch — panel 6](https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-domainName=conversations-search&var-clientId=696084496265&var-datasource=4PeY_YyVz&from=1794818340000&to=1794820200000&viewPanel=6)
-
-### Logs
-- [Log Explorer query](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22CRM-conversations%22%0AjsonPayload.message%3D~%22yellow%7Ccluster%7Copensearch%7Celastic%22%0Aseverity%3E%3DERROR;timeRange=2026-11-16T08%3A49%3A13Z%2F2026-11-16T08%3A59%3A13Z?project=highlevel-backend)
+- [Free storage — crm-messages-search node gjjwJfeMS8C-EF-UiiMXlg (threshold breach; 7-day view)](https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-datasource=4PeY_YyVz&var-region=default&var-domainName=crm-messages-search&var-clientId=696084496265&var-nodeId=gjjwJfeMS8C-EF-UiiMXlg&from=1794217894856&to=1794821494856&viewPanel=39)
+- [Node CPU — crm-messages-search node gjjwJfeMS8C-EF-UiiMXlg (latest 5.12%; 7-day view)](https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-datasource=4PeY_YyVz&var-region=default&var-domainName=crm-messages-search&var-clientId=696084496265&var-nodeId=gjjwJfeMS8C-EF-UiiMXlg&from=1794217894856&to=1794821494856&viewPanel=66)
+- [Indexing rate — crm-messages-search node gjjwJfeMS8C-EF-UiiMXlg (latest below 7-day median)](https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-datasource=4PeY_YyVz&var-region=default&var-domainName=crm-messages-search&var-clientId=696084496265&var-nodeId=gjjwJfeMS8C-EF-UiiMXlg&from=1794217894856&to=1794821494856&viewPanel=69)
+- [Aws Elasticsearch — panel 39](https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-datasource=4PeY_YyVz&var-region=default&var-domainName=crm-messages-search&var-clientId=696084496265&var-nodeId=gjjwJfeMS8C-EF-UiiMXlg&from=1794214800000&to=1794821400000&viewPanel=39)
+- [Aws Elasticsearch — panel 21](https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-datasource=4PeY_YyVz&var-region=default&var-domainName=crm-messages-search&var-clientId=696084496265&var-nodeId=All&from=1794807000000&to=1794820500000&viewPanel=21)
 
 ### Related incidents
-- [Concurrent conversations-search Yellow alert #139960 in #alerts-database](https://gohighlevel.slack.com/archives/C09JSAXKKG8/p1794819253198779?thread_ts=1794819253198779)
-- [RCA reports recovery and no observed consumer errors or slow queries; cause remains unconfirmed — 16 Nov](https://gohighlevel.slack.com/archives/C09JSAXKKG8/p1794819257672559?thread_ts=1794819253198779)
+- [Same-cluster RCA and investigation gaps](https://gohighlevel.slack.com/archives/C09JSAXKKG8/p1794819915088539?thread_ts=1794819915.088539)
 
 ## Investigation Timeline
 
 **Deep dive passes**: 3
 **Worker calls**: 13
 
-**Total worker time**: 851.0s
+**Total worker time**: 982.3s
 
 | Step | Type | Duration | Status |
 |------|------|----------|--------|
-| session_validation | decision | 11.2s | ✓ |
-| grafana-worker | worker | 98.2s | ✓ |
-| kubectl-worker | worker | 131.5s | ✓ |
-| log-explorer-worker | worker | 67.8s | ✓ |
-| slack-worker | worker | 62.8s | ✓ |
-| triage | worker | 12.9s | ✓ |
-| triage_llm_ranking | decision | 34.4s | ✓ |
-| deep_dive_pass_1 | worker | 162.6s | ✓ |
-| follow_up_check | decision | 15.0s | ✓ |
-| deep_dive_pass_2 | worker | 105.8s | ✓ |
-| follow_up_check | decision | 11.0s | ✓ |
-| deep_dive_pass_3 | worker | 120.2s | ✓ |
-| cross_validation | worker | 17.7s | ✓ |
+| session_validation | decision | 12.4s | ✓ |
+| grafana-worker | worker | 131.7s | ✓ |
+| kubectl-worker | worker | 106.1s | ✓ |
+| log-explorer-worker | worker | 43.1s | ✓ |
+| slack-worker | worker | 52.5s | ✓ |
+| triage | worker | 12.8s | ✓ |
+| triage_llm_ranking | decision | 32.9s | ✓ |
+| deep_dive_pass_1 | worker | 71.6s | ✓ |
+| follow_up_check | decision | 10.0s | ✓ |
+| deep_dive_pass_2 | worker | 398.7s | ✓ |
+| follow_up_check | decision | 12.2s | ✓ |
+| deep_dive_pass_3 | worker | 82.5s | ✓ |
+| cross_validation | worker | 15.8s | ✓ |
 
 ## Alert Context
 
 ```
-||*<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/I7RGLA1ZEESL2|#139959 AWS ES Cluster Health Yellow>* via CRM-conversations runbook: <https://platform.docs/alerts/runbooks/opensearch/alert-response-operational/#cluster-status-red--yellow|here> AlertValues: Cluster: conversations-search *<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/I7RGLA1ZEESL2|#139959 AWS ES Cluster Health Yellow>* via CRM-conversations runbook: <https://platform.docs/alerts/runbooks/opensearch/alert-response-operational/#cluster-status-red--yellow|here> AlertValues: Cluster: conversations-search
+||*<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IMZ6U4G77UZS8|#139962 AWS ES Free Storage Space>* via CRM-conversations runbook: <https://platform.docs/alerts/runbooks/opensearch/alert-response-operational/#free-storage|here> AlertValues: Hey, looks like one of the nodes in an AWS ES cluster is having low storage space. Please check the details below, Cluster: crm-messages-search Node Id: gjjwJfeMS8C-EF-UiiMXlg Storage Space: 83940.64 MB Dashboard Link: <https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&amp;viewPanel=39&amp;var-domainName=crm-messages-search&amp;var-nodeId=gjjwJfeMS8C-EF-UiiMXlg> Help Doc : <http://platform.docs/data/faq/elasticsearch/elasticsearch-common-errors/#aws-es-free-storage-space-via-platform-critical> *<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IMZ6U4G77UZS8|#139962 AWS ES Free Storage Space>* via CRM-conversations runbook: <https://platform.docs/alerts/runbooks/opensearch/alert-response-operational/#free-storage|here> AlertValues: Hey, looks like one of the nodes in an AWS ES cluster is having low storage space. Please check the details below, Cluster: crm-messages-search Node Id: gjjwJfeMS8C-EF-UiiMXlg Storage Space: 83940.64 MB Dashboard Link: <https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&amp;viewPanel=39&amp;var-domainName=crm-messages-search&amp;var-nodeId=gjjwJfeMS8C-EF-UiiMXlg> Help Doc : <http://platform.docs/data/faq/elasticsearch/elasticsearch-common-errors/#aws-es-free-storage-space-via-platform-critical>
 ```
 
 ---
-*Generated by Alert Investigation Orchestrator [Codex] at 2026-11-16T09:06:42.582Z*
+*Generated by Alert Investigation Orchestrator [Codex] at 2026-11-16T09:25:35.546Z*
