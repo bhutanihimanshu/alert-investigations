@@ -1,25 +1,25 @@
-# Alert Investigation: Unknown
+# Alert Investigation: HighCPU
 
-**Investigation ID**: inv-2026-11-16-41228911
+**Investigation ID**: inv-2026-11-16-96df73a8
 **Workload**: CRM-conversations
 **Container**: CRM-conversations
 **Cluster**: conversations-search
 **Channel**: slack
-**Detected**: 2026-11-16T10:22:19.985Z
+**Detected**: 2026-11-16T14:24:15.260Z
 **Status**: delivering
 
 ## Root Cause
 
-**Summary**: The storage alert coincided with a transient cluster disruption and recovered shortly afterward. A connection to node or shard activity is plausible but unverified; the specific cause is unknown.
+**Summary**: Elevated indexing and search activity coincided with the node CPU alert, but the causal mechanism and trigger are unconfirmed. No evidence establishes that earlier shard rebalancing, worker errors, or a deployment caused this spike.
 **Confidence**: low
-**Category**: Transient OpenSearch node or shard-allocation event (unconfirmed)
+**Category**: Unconfirmed; elevated OpenSearch activity is a plausible contributor
 
 ## Triage
 
-**Primary Anomaly**: none
-**Details**: The alert is for low free storage on OpenSearch node d_mZ4APpS8WI51_lagk5NA: 87,233 MB at alert time, about 36% below its seven-day median and below the 100,000 MB threshold. Other observed nodes stayed above threshold. A recent same-cluster node disruption is documented, but it involved a different node; causation is unconfirmed. Logs and Kubernetes checks did not verify the storage alert’s cause or current state.
+**Primary Anomaly**: traffic_spike
+**Details**: CPU reached 85.69% against a 70% threshold, with indexing at 35,743 versus a 7-day average of 14,837 and search rate also above average. Slack reports cluster-average CPU at 48% versus a 21% baseline. The evidence points to elevated indexing activity accompanying the CPU spike, but does not establish its cause. Prior indexing-driven incidents are plausible matches; this alert’s evidence does not confirm their specific causal mechanisms.
 **Anomalous**: Yes
-**Deep Dive Direction**: Investigate the alerted node’s storage usage and shard allocation over time, then check cluster health and node-level events around the alert. Verify whether the same-cluster disruption affected this node; treat historical candidates as unrelated unless new evidence links them.
+**Deep Dive Direction**: Deep dive into whether elevated indexing or search load is driving the node CPU. Check OpenSearch write-pool rejections, shard distribution/rebalancing, query latency and sort behavior, backfill or reindex activity, and worker liveness/Pub/Sub redelivery. Compare the affected node and timing with peer nodes; current evidence does not yet support shortcut verification of a specific historical RCA.
 
 ## Cross-Validation
 
@@ -27,103 +27,125 @@
 
 | Source | Finding | Agrees |
 |--------|---------|--------|
-| Grafana metrics | The alerted node dropped below the 100,000 MB threshold, then recovered above it by 10:24Z. Cluster status was Yellow during part of the same interval and returned Green at 10:18Z; other observed nodes stayed above threshold. | ✓ |
-| Slack context | A same-cluster node disruption and Yellow status were reported, but on a different node. The alert thread has no diagnosis linking that disruption to this storage dip. | ✓ |
-| Kubernetes checks | Pod and deployment state could not be verified; queries timed out without matching the workload. | ✗ |
-| GCP logs | The queried CRM-conversations container logs returned no entries and do not verify OpenSearch storage or shard allocation. | ✗ |
+| Grafana / CloudWatch metrics | Node CPU reached 85.69% against a 70% threshold; indexing and search rates were above their 7-day averages. This supports elevated activity coinciding with the alert, but does not establish causation. | ✓ |
+| Slack alert thread | Reports cluster-average CPU at 48% versus a 21% baseline and higher search latency. Earlier shard rebalancing was mentioned, but no link to this node's CPU spike was verified; impact and recovery are unconfirmed. | ✓ |
+| GCP logs | Selected ERROR and WARNING queries for one indexing worker returned no entries. This is limited evidence and does not rule out other workers, log severities, or Pub/Sub redelivery. | ✗ |
+| OpenSearch node diagnostics | Write-pool rejections, shard placement or relocation, hot threads, active tasks, and node-level query behavior were not checked. | ✗ |
 
 ### Discrepancies
-- The alert reported 87,233 MB free at 10:22Z; Grafana shows recovery above threshold by 10:24Z.
-- The related node disruption involved a different node, and no evidence links it to the alerted node's storage dip.
+- The alert reports 85.69% CPU, while the queried CloudWatch series was 71.15% at the window end; these are different measurements or timestamps.
+- Slack reports 48% cluster-average CPU, while the affected node was 71.15% at the queried window end.
+- GCP and Kubernetes checks did not cover the AWS OpenSearch data node directly.
 
 ## Deep Dive Findings
 
 {
-  "assessment": {
-    "finding": "The alerting node’s free storage fell from about 128,788 MB at 10:00Z to 86,871 MB at 10:23Z, then rose to 123,467 MB at 10:24Z. The drop was transient; the node was above the 100,000 MB threshold in the latest retrieved datapoint at 10:31Z (122,635 MB).",
-    "correlation": "The cluster was Yellow from 09:58Z through 10:17Z, and the reported node count fell from 36 to 34 around 10:10Z before returning to 36 by 10:15Z. Cluster status returned Green at 10:18Z. This timing aligns with the storage drop and rebound, consistent with a brief cluster/node or shard-allocation event, but the metrics do not identify the mechanism.",
-    "same_cluster_disruption": "The earlier Fm8p disruption was a different node and occurred around 09:18–09:22Z. It does not explain the later storage dip based on available evidence. The 09:58–10:17Z Yellow period is a separate, temporally aligned cluster event; a direct link to this node or specific shard movement is unverified.",
-    "disproof_check": "Other nodes remained above 100,000 MB during the sampled window, so the storage drop was node-specific rather than a cluster-wide free-storage decline. Cluster status and node count changed during the same broader interval, which argues against treating the storage dip as an isolated metric anomaly.",
-    "confidence": "Medium that the alert coincided with a transient cluster disruption; low on the specific cause. Shard allocation history and node-level event details were not available.",
-    "action": "If the pattern recurs, check OpenSearch shard allocation/recovery and AWS domain node events for this exact interval and node ID before attributing cause."
+  "alert": {
+    "type": "HighCPU",
+    "cluster": "conversations-search",
+    "node": "9z5rx125RDGGUp_mrV6Rvw",
+    "started_at_utc": "2026-11-16T14:24:14Z",
+    "started_at_ist": "2026-11-16 19:54:14 IST",
+    "reported_cpu_percent": 85.69,
+    "threshold_percent": 70
   },
-  "queries_used": [
+  "findings": [
     {
-      "source": "Grafana CloudWatch datasource, AWS/ES",
-      "metrics": [
-        "FreeStorageSpace by NodeId",
-        "Nodes",
-        "ClusterStatus.green",
-        "ClusterStatus.yellow",
-        "ClusterStatus.red",
-        "ClusterUsedSpace"
-      ],
-      "filters": {
-        "region": "us-east-1",
-        "domain": "conversations-search",
-        "clientId": "696084496265",
-        "nodeId": "d_mZ4APpS8WI51_lagk5NA"
-      },
-      "windows": [
-        "2026-11-09T10:40:00Z to 2026-11-16T10:40:00Z",
-        "2026-11-16T09:00:00Z to 2026-11-16T10:45:00Z"
-      ],
-      "result": "Node-specific storage trajectory and cluster-status/node-count timelines retrieved."
+      "finding": "Elevated indexing and search coincide with the CPU alert, but available metrics do not establish that either caused this node's spike.",
+      "evidence": "Indexing was 35,743 versus a 7-day average of 14,837; search was 3,522 versus 2,404. Node CPU was 71.15% at the queried window end, versus a 7-day average of 27.05%; peer median was 46.7%. Slack reported cluster-average CPU at 48% versus a 21% baseline and search latency at 8.68 ms versus 3.78 ms.",
+      "confidence": "Medium for elevated activity; low for causation."
     },
     {
-      "source": "GCP Log Explorer",
-      "query": "resource.type=\"k8s_container\" resource.labels.container_name=\"CRM-conversations\" severity>=ERROR jsonPayload.message:*",
-      "result": "No entries returned in the supplied Layer 1 query. This filters for a Kubernetes container and does not verify OpenSearch domain events or shard allocation."
+      "finding": "Worker ERROR logs and warning/error patterns searched for the indexing worker returned no entries in the queried interval.",
+      "evidence": "Two Cloud Logging queries for `conversations-elastic-indexing-messages-worker` returned empty results: severity>=ERROR from 14:19–14:29Z; and severity>=WARNING with `rejected|AckError|429|redeliver|backfill|reindex|index` from 14:10–14:40Z. This does not rule out other worker names, INFO logs, or Pub/Sub redelivery.",
+      "confidence": "Low; searches were limited to one worker container and specific severities/patterns."
+    },
+    {
+      "finding": "The earlier Yellow cluster alert and reported shard rebalancing may be relevant, but no evidence links them to this CPU event.",
+      "evidence": "Slack context says shard rebalancing was underway earlier on 16 Nov. Its timing and node-level impact relative to this alert were not verified.",
+      "confidence": "Low."
+    },
+    {
+      "finding": "The specific OpenSearch mechanisms requested remain unverified.",
+      "evidence": "No live read-only OpenSearch queries were obtained for write-pool rejections/queue, shard placement or relocation, per-node query latency/sort behavior, active tasks/backfills, hot threads, or node-by-node comparisons at alert time. The authenticated Chrome session was unavailable to this executor; AWS CLI was not installed. GKE pod inventory does not represent this AWS data node.",
+      "confidence": "Not assessed."
     }
   ],
-  "log_queries_used": [],
-  "source_urls": {
-    "grafana_alert_window": "https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-datasource=4PeY_YyVz&var-region=us-east-1&var-domainName=conversations-search&var-clientId=696084496265&var-nodeId=d_mZ4APpS8WI51_lagk5NA&from=1794822739985&to=1794826339985&viewPanel=21",
-    "grafana_seven_day_view": "https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-datasource=4PeY_YyVz&var-region=us-east-1&var-domainName=conversations-search&var-clientId=696084496265&var-nodeId=d_mZ4APpS8WI51_lagk5NA&from=now-7d&to=now&viewPanel=21",
-    "original_alert_thread": "https://gohighlevel.slack.com/archives/C097UPY34QJ/p1794824539985319?thread_ts=1794824539.985319",
-    "related_fm8p_disruption_thread": "https://gohighlevel.slack.com/archives/C097UPY34QJ/p1794823800151019?thread_ts=1794820995.087279"
+  "causal_assessment": {
+    "conclusion": "Elevated indexing/search activity is a plausible contributor, not a confirmed root cause. The evidence does not identify a specific trigger or support attributing this alert to a historical backfill/reindex mechanism.",
+    "disconfirming_evidence_or_gaps": [
+      "No OpenSearch write-pool or rejection measurements were available.",
+      "No node-level shard distribution, relocation, or hot-thread evidence was available.",
+      "No verified link between the earlier shard rebalancing and this node's CPU was established.",
+      "The GCP log queries returned no matches, but covered only one container name and selected severities/patterns."
+    ],
+    "next_evidence_needed": [
+      "Read-only OpenSearch checks for this node and peers: write/search thread-pool queues and rejections, shard allocation/relocation, node stats, hot threads, and active tasks.",
+      "Time-align indexing/search rates, latency, and node CPU across affected and peer nodes.",
+      "Check the actual indexing worker fleet's deployments, liveness/restarts, Pub/Sub ack/nack/redelivery, and any backfill/reindex activity around 14:24Z."
+    ]
+  },
+  "log_queries": [
+    {
+      "query": "resource.type=\"k8s_container\" AND resource.labels.container_name=\"conversations-elastic-indexing-messages-worker\" AND timestamp>=\"2026-11-16T14:19:00Z\" AND timestamp<=\"2026-11-16T14:29:00Z\" AND severity>=ERROR",
+      "result": "No entries returned.",
+      "log_explorer_url": "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22conversations-elastic-indexing-messages-worker%22%0Atimestamp%3E%3D%222026-11-16T14%3A19%3A00Z%22%0Atimestamp%3C%3D%222026-11-16T14%3A29%3A00Z%22%0Aseverity%3E%3DERROR;timeRange=2026-11-16T14%3A19%3A00Z%2F2026-11-16T14%3A29%3A00Z?project=highlevel-backend"
+    },
+    {
+      "query": "resource.type=\"k8s_container\" AND resource.labels.container_name=\"conversations-elastic-indexing-messages-worker\" AND timestamp>=\"2026-11-16T14:10:00Z\" AND timestamp<=\"2026-11-16T14:40:00Z\" AND severity>=WARNING AND jsonPayload.message=~\"rejected|AckError|429|redeliver|backfill|reindex|index\"",
+      "result": "No entries returned.",
+      "log_explorer_url": "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22conversations-elastic-indexing-messages-worker%22%0Atimestamp%3E%3D%222026-11-16T14%3A10%3A00Z%22%0Atimestamp%3C%3D%222026-11-16T14%3A40%3A00Z%22%0Aseverity%3E%3DWARNING%0AjsonPayload.message%3D~%22rejected%7CAckError%7C429%7Credeliver%7Cbackfill%7Creindex%7Cindex%22;timeRange=2026-11-16T14%3A10%3A00Z%2F2026-11-16T14%3A40%3A00Z?project=highlevel-backend"
+    }
+  ],
+  "metric_urls": [
+    "https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-domainName=conversations-search&var-clientId=696084496265&var-nodeId=9z5rx125RDGGUp_mrV6Rvw&from=1794837240000&to=1794840840000&viewPanel=66",
+    "https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-domainName=conversations-search&var-clientId=696084496265&var-nodeId=9z5rx125RDGGUp_mrV6Rvw&from=1794837240000&to=1794840840000&viewPanel=69",
+    "https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-domainName=conversations-search&var-clientId=696084496265&var-nodeId=9z5rx125RDGGUp_mrV6Rvw&from=1794837240000&to=1794840840000&viewPanel=68"
+  ],
+  "slack_context": {
+    "current_alert_thread": "https://gohighlevel.slack.com/archives/C09JSAXKKG8/p1794839055479519?thread_ts=1794839055.479519",
+    "earlier_yellow_and_rebalancing_thread": "https://gohighlevel.slack.com/archives/C09JSAXKKG8/p1794819253198779?thread_ts=1794819253.198779",
+    "summary": "Slack reports no captured slow queries, consumer errors, or cron/deploy events in the sources checked; cause, impact, and recovery remain unconfirmed."
   }
 }
 
 ## Evidence
 
 ### Dashboards (incident window)
-- [Free storage — conversations-search node d_mZ4APpS8WI51_lagk5NA (alert window)](https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-domainName=conversations-search&var-nodeId=d_mZ4APpS8WI51_lagk5NA&from=1794822739985&to=1794826339985&viewPanel=39)
-- [Aws Elasticsearch — panel 21](https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-datasource=4PeY_YyVz&var-region=us-east-1&var-domainName=conversations-search&var-clientId=696084496265&var-nodeId=d_mZ4APpS8WI51_lagk5NA&from=1794822739985&to=1794826339985&viewPanel=21)
-- [Aws Elasticsearch — panel 21](https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-datasource=4PeY_YyVz&var-region=us-east-1&var-domainName=conversations-search&var-clientId=696084496265&var-nodeId=d_mZ4APpS8WI51_lagk5NA&from=now-7d&to=now&viewPanel=21)
-
-### Logs
-- [Log Explorer query](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22CRM-conversations%22%0Aseverity%3E%3DERROR%0AjsonPayload.message%3A%2A;timeRange=2026-11-16T10%3A17%3A19Z%2F2026-11-16T10%3A27%3A19Z?project=highlevel-backend)
+- [CPU utilization — conversations-search node 9z5rx125RDGGUp_mrV6Rvw (alert 85.69%, queried end 71.15%)](https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-domainName=conversations-search&var-clientId=696084496265&var-nodeId=9z5rx125RDGGUp_mrV6Rvw&from=1794837240000&to=1794840840000&viewPanel=66)
+- [Indexing rate — conversations-search (latest above 7-day average)](https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-domainName=conversations-search&var-clientId=696084496265&var-nodeId=9z5rx125RDGGUp_mrV6Rvw&from=1794837240000&to=1794840840000&viewPanel=69)
+- [Search rate — conversations-search (latest above 7-day average)](https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-domainName=conversations-search&var-clientId=696084496265&var-nodeId=9z5rx125RDGGUp_mrV6Rvw&from=1794837240000&to=1794840840000&viewPanel=68)
 
 ### Related incidents
-- [Same-cluster Yellow alerts #139959/#139969: node Fm8p disconnected repeatedly, then cluster returned green — 16 Nov](https://gohighlevel.slack.com/archives/C097UPY34QJ/p1794823800151019?thread_ts=1794820995.087279)
-- [Related conversations-search Yellow alert #139959](https://gohighlevel.slack.com/archives/C097UPY34QJ/p1794819253149729?thread_ts=1794819253.149729)
+- [Same-cluster Yellow alert and shard rebalancing — 16 Nov](https://gohighlevel.slack.com/archives/C09JSAXKKG8/p1794819253198779?thread_ts=1794819253.198779)
+- [Earlier conversations-search CPU alert — 11 Nov](https://gohighlevel.slack.com/archives/C09JSAXKKG8/p1794409937855609?thread_ts=1794409937.855609)
+- [Current conversations-search CPU alert and RCA — 16 Nov](https://gohighlevel.slack.com/archives/C09JSAXKKG8/p1794839055479519?thread_ts=1794839055.479519)
 
 ## Investigation Timeline
 
 **Deep dive passes**: 1
 **Worker calls**: 10
 
-**Total worker time**: 643.4s
+**Total worker time**: 732.7s
 
 | Step | Type | Duration | Status |
 |------|------|----------|--------|
-| session_validation | decision | 11.4s | ✓ |
-| grafana-worker | worker | 157.3s | ✓ |
-| kubectl-worker | worker | 86.5s | ✓ |
-| log-explorer-worker | worker | 79.3s | ✓ |
-| slack-worker | worker | 68.0s | ✓ |
-| triage | worker | 14.2s | ✓ |
-| triage_llm_ranking | decision | 36.6s | ✓ |
-| deep_dive_pass_1 | worker | 161.5s | ✓ |
-| follow_up_check | decision | 12.2s | ✓ |
-| cross_validation | worker | 16.3s | ✓ |
+| session_validation | decision | 16.6s | ✓ |
+| grafana-worker | worker | 96.3s | ✓ |
+| kubectl-worker | worker | 104.2s | ✓ |
+| log-explorer-worker | worker | 60.2s | ✓ |
+| slack-worker | worker | 72.5s | ✓ |
+| triage | worker | 12.5s | ✓ |
+| triage_llm_ranking | decision | 21.4s | ✓ |
+| deep_dive_pass_1 | worker | 321.3s | ✓ |
+| follow_up_check | decision | 12.4s | ✓ |
+| cross_validation | worker | 15.5s | ✓ |
 
 ## Alert Context
 
 ```
-||*<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IQ4P9W2VAJDKN|#139980 AWS ES Free Storage Space>* via CRM-conversations runbook: <https://platform.docs/alerts/runbooks/opensearch/alert-response-operational/#free-storage|here> AlertValues: Hey, looks like one of the nodes in an AWS ES cluster is having low storage space. Please check the details below, Cluster: conversations-search Node Id: d_mZ4APpS8WI51_lagk5NA Storage Space: 87233.054 MB Dashboard Link: https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&viewPanel=39&var-domainName=conversations-search&var-nodeId=d_mZ4APpS8WI51_lagk5NA Help Doc : http://platform.docs/data/faq/elasticsearch/elasticsearch-common-errors/#aws-es-free-storage-space-via-platform-critical *<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IQ4P9W2VAJDKN|#139980 AWS ES Free Storage Space>* via CRM-conversations runbook: <https://platform.docs/alerts/runbooks/opensearch/alert-response-operational/#free-storage|here> AlertValues: Hey, looks like one of the nodes in an AWS ES cluster is having low storage space. Please check the details below, Cluster: conversations-search Node Id: d_mZ4APpS8WI51_lagk5NA Storage Space: 87233.054 MB Dashboard Link: <https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&amp;viewPanel=39&amp;var-domainName=conversations-search&amp;var-nodeId=d_mZ4APpS8WI51_lagk5NA> Help Doc : <http://platform.docs/data/faq/elasticsearch/elasticsearch-common-errors/#aws-es-free-storage-space-via-platform-critical>
+||*<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/INKZVTPT3N9FF|#140002 AWS ES Data Node CPU Utilization>* via CRM-conversations runbook: <https://platform.docs/alerts/runbooks/opensearch/alert-response-operational/#cpu|here> AlertValues: Hey, looks like one of the nodes in an AWS ES cluster is having high CPU usage. Please check the details below, Cluster: conversations-search Node: 9z5rx125RDGGUp_mrV6Rvw CPU Utilization: 85.68562268963808% Dashboard Link: <https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&amp;viewPanel=66&amp;var-domainName=conversations-search&amp;var-nodeId=9z5rx125RDGGUp_mrV6Rvw> *<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/INKZVTPT3N9FF|#140002 AWS ES Data Node CPU Utilization>* via CRM-conversations runbook: <https://platform.docs/alerts/runbooks/opensearch/alert-response-operational/#cpu|here> AlertValues: Hey, looks like one of the nodes in an AWS ES cluster is having high CPU usage. Please check the details below, Cluster: conversations-search Node: 9z5rx125RDGGUp_mrV6Rvw CPU Utilization: 85.68562268963808% Dashboard Link: <https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&amp;viewPanel=66&amp;var-domainName=conversations-search&amp;var-nodeId=9z5rx125RDGGUp_mrV6Rvw>
 ```
 
 ---
-*Generated by Alert Investigation Orchestrator [Codex] at 2026-11-16T10:33:10.692Z*
+*Generated by Alert Investigation Orchestrator [Codex] at 2026-11-16T14:35:32.364Z*
