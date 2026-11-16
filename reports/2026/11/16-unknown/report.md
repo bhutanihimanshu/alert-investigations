@@ -1,25 +1,25 @@
 # Alert Investigation: Unknown
 
-**Investigation ID**: inv-2026-11-16-a4621a40
+**Investigation ID**: inv-2026-11-16-41228911
 **Workload**: CRM-conversations
 **Container**: CRM-conversations
-**Cluster**: crm-messages-search
+**Cluster**: conversations-search
 **Channel**: slack
-**Detected**: 2026-11-16T09:52:04.434Z
+**Detected**: 2026-11-16T10:22:19.985Z
 **Status**: delivering
 
 ## Root Cause
 
-**Summary**: The storage threshold breach is confirmed, but its cause is unconfirmed. Index growth, shard relocation, and deployment-related effects remain unverified; AWS domain events, CloudTrail, per-node shard history, and per-index storage deltas are needed to distinguish them.
+**Summary**: The storage alert coincided with a transient cluster disruption and recovered shortly afterward. A connection to node or shard activity is plausible but unverified; the specific cause is unknown.
 **Confidence**: low
-**Category**: Unconfirmed AWS OpenSearch storage consumption or allocation change
+**Category**: Transient OpenSearch node or shard-allocation event (unconfirmed)
 
 ## Triage
 
 **Primary Anomaly**: none
-**Details**: Free storage on OpenSearch node WzX5t4-HQeeX8JTy0AMNaA fell to 89,008.597 MB, below the 100,000 MB alert threshold. CPU, JVM pressure, indexing rate, and search rate show no clear anomaly. Slack notes earlier storage declines and shard relocations on this domain, but the initiating cause is unconfirmed; GCP logs and Kubernetes checks provide no relevant evidence. Historical candidates do not establish a matching cause.
+**Details**: The alert is for low free storage on OpenSearch node d_mZ4APpS8WI51_lagk5NA: 87,233 MB at alert time, about 36% below its seven-day median and below the 100,000 MB threshold. Other observed nodes stayed above threshold. A recent same-cluster node disruption is documented, but it involved a different node; causation is unconfirmed. Logs and Kubernetes checks did not verify the storage alert’s cause or current state.
 **Anomalous**: Yes
-**Deep Dive Direction**: YES. The direction is still correct: investigate OpenSearch storage usage and shard allocation or relocation, and verify the metrics deployment’s scope. The cause remains unconfirmed; we need AWS domain events and CloudTrail changes, plus time-aligned per-node shard allocation and per-index storage deltas for 08:45–10:00 UTC.
+**Deep Dive Direction**: Investigate the alerted node’s storage usage and shard allocation over time, then check cluster health and node-level events around the alert. Verify whether the same-cluster disruption affected this node; treat historical candidates as unrelated unless new evidence links them.
 
 ## Cross-Validation
 
@@ -27,119 +27,103 @@
 
 | Source | Finding | Agrees |
 |--------|---------|--------|
-| Grafana AWS Elasticsearch dashboard | Confirms free storage on node WzX5t4-HQeeX8JTy0AMNaA was 89,008.597 MB, below the 100,000 MB threshold. CPU, JVM pressure, indexing, and search metrics show no clear corresponding surge. | ✓ |
-| Slack alert thread and related messages | Confirms the alert and reports earlier storage declines and shard relocations, but records no cause for this node’s storage drop. The nearby shard movement alert concerned a different cluster. | ✓ |
-| GCP logs and Kubernetes checks | No matching application WARNING/ERROR entries or Kubernetes evidence were found. These checks do not cover AWS domain events or storage allocation. | ✓ |
-| Deep dive | Could not retrieve AWS domain events, CloudTrail changes, time-aligned shard assignments, or per-index storage deltas; the deployment’s scope also remains unverified. | ✓ |
+| Grafana metrics | The alerted node dropped below the 100,000 MB threshold, then recovered above it by 10:24Z. Cluster status was Yellow during part of the same interval and returned Green at 10:18Z; other observed nodes stayed above threshold. | ✓ |
+| Slack context | A same-cluster node disruption and Yellow status were reported, but on a different node. The alert thread has no diagnosis linking that disruption to this storage dip. | ✓ |
+| Kubernetes checks | Pod and deployment state could not be verified; queries timed out without matching the workload. | ✗ |
+| GCP logs | The queried CRM-conversations container logs returned no entries and do not verify OpenSearch storage or shard allocation. | ✗ |
 
 ### Discrepancies
-- Grafana confirms the threshold breach, but available evidence does not identify what consumed storage.
-- Prior reports of shard relocations and the nearby production deployment are temporally relevant but are not linked to this node’s storage change.
-- GCP and Kubernetes checks do not provide evidence about AWS-side storage or shard allocation.
+- The alert reported 87,233 MB free at 10:22Z; Grafana shows recovery above threshold by 10:24Z.
+- The related node disruption involved a different node, and no evidence links it to the alerted node's storage dip.
 
 ## Deep Dive Findings
 
 {
-  "deep_dive_findings": [
-    {
-      "finding": "This pass found no new evidence identifying what consumed storage on node WzX5t4-HQeeX8JTy0AMNaA. The recorded alert value is 89,008.597 MB, below the 100,000 MB threshold.",
-      "assessment": "The storage breach is established; its cause remains unconfirmed. Prior metrics show no clear CPU, JVM pressure, indexing-rate, or search-rate surge.",
-      "source_urls": [
-        "https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-datasource=4PeY_YyVz&var-region=us-east-1&var-domainName=crm-messages-search&var-clientId=696084496265&var-nodeId=WzX5t4-HQeeX8JTy0AMNaA&from=1794820894592&to=1794824494592&viewPanel=39"
-      ],
-      "confidence": "high"
-    },
-    {
-      "finding": "Earlier same-domain storage declines and shard relocations were reported, but available records do not provide time-aligned shard assignments or per-index storage deltas for 08:45–10:00 UTC.",
-      "assessment": "Relocation and index growth remain untested explanations; neither is established as the driver.",
-      "source_urls": [
-        "https://gohighlevel.slack.com/archives/C097UPY34QJ/p1794819724914529?thread_ts=1794819724.914529"
-      ],
-      "confidence": "low"
-    },
-    {
-      "finding": "The production message-search metrics deployment was reported before the alert, but its exact change scope and any relationship to AWS domain or index operations are not available in the inspected evidence.",
-      "assessment": "Temporal proximity alone does not establish causation or prove the deployment unrelated.",
-      "source_urls": [
-        "https://gohighlevel.slack.com/archives/C096N87SBFW/p1794819112828199?thread_ts=1794819112.828199"
-      ],
-      "confidence": "low"
-    },
-    {
-      "finding": "The available GCP log query returned no matching WARNING/ERROR entries, and the checked Kubernetes contexts did not identify this managed AWS OpenSearch node.",
-      "assessment": "These checks do not explain AWS-side storage consumption or allocation changes.",
-      "source_urls": [
-        "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22CRM-conversations%22%0Aseverity%3DWARNING%0AjsonPayload.message%3A*;timeRange=2026-11-16T09%3A47%3A00Z%2F2026-11-16T09%3A57%3A00Z?project=highlevel-backend"
-      ],
-      "confidence": "medium"
-    }
-  ],
-  "log_queries_used": [
-    {
-      "query": "resource.type=\"k8s_container\" AND resource.labels.container_name=\"CRM-conversations\" AND severity=WARNING AND timestamp>=\"2026-11-16T09:47:00Z\" AND timestamp<=\"2026-11-16T09:57:00Z\"",
-      "result": "Prior Layer 1 result reports no matching entries. This query covers the application routing label, not AWS OpenSearch domain events."
-    }
-  ],
-  "log_explorer_urls": [
-    "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22CRM-conversations%22%0Aseverity%3DWARNING%0AjsonPayload.message%3A*;timeRange=2026-11-16T09%3A47%3A00Z%2F2026-11-16T09%3A57%3A00Z?project=highlevel-backend"
-  ],
-  "cause": {
-    "status": "unconfirmed",
-    "confidence": "low",
-    "assessment": "This pass could not retrieve AWS OpenSearch domain events, CloudTrail changes, per-node shard allocation, or per-index storage deltas. The metrics deployment’s scope also remains unverified.",
-    "falsification": "Per-index growth on this node without matching shard arrivals would weigh against relocation as the main driver. Stable index sizes alongside shard arrivals whose sizes and timing match the storage drop would weigh against ordinary index growth."
+  "assessment": {
+    "finding": "The alerting node’s free storage fell from about 128,788 MB at 10:00Z to 86,871 MB at 10:23Z, then rose to 123,467 MB at 10:24Z. The drop was transient; the node was above the 100,000 MB threshold in the latest retrieved datapoint at 10:31Z (122,635 MB).",
+    "correlation": "The cluster was Yellow from 09:58Z through 10:17Z, and the reported node count fell from 36 to 34 around 10:10Z before returning to 36 by 10:15Z. Cluster status returned Green at 10:18Z. This timing aligns with the storage drop and rebound, consistent with a brief cluster/node or shard-allocation event, but the metrics do not identify the mechanism.",
+    "same_cluster_disruption": "The earlier Fm8p disruption was a different node and occurred around 09:18–09:22Z. It does not explain the later storage dip based on available evidence. The 09:58–10:17Z Yellow period is a separate, temporally aligned cluster event; a direct link to this node or specific shard movement is unverified.",
+    "disproof_check": "Other nodes remained above 100,000 MB during the sampled window, so the storage drop was node-specific rather than a cluster-wide free-storage decline. Cluster status and node count changed during the same broader interval, which argues against treating the storage dip as an isolated metric anomaly.",
+    "confidence": "Medium that the alert coincided with a transient cluster disruption; low on the specific cause. Shard allocation history and node-level event details were not available.",
+    "action": "If the pattern recurs, check OpenSearch shard allocation/recovery and AWS domain node events for this exact interval and node ID before attributing cause."
   },
-  "limitations": [
-    "AWS CLI and a dedicated AWS/OpenSearch connector were unavailable in this executor; browser access was also unavailable.",
-    "No AWS event, CloudTrail, shard-allocation, or per-index storage query was performed.",
-    "No new orchestrator investigation was launched."
+  "queries_used": [
+    {
+      "source": "Grafana CloudWatch datasource, AWS/ES",
+      "metrics": [
+        "FreeStorageSpace by NodeId",
+        "Nodes",
+        "ClusterStatus.green",
+        "ClusterStatus.yellow",
+        "ClusterStatus.red",
+        "ClusterUsedSpace"
+      ],
+      "filters": {
+        "region": "us-east-1",
+        "domain": "conversations-search",
+        "clientId": "696084496265",
+        "nodeId": "d_mZ4APpS8WI51_lagk5NA"
+      },
+      "windows": [
+        "2026-11-09T10:40:00Z to 2026-11-16T10:40:00Z",
+        "2026-11-16T09:00:00Z to 2026-11-16T10:45:00Z"
+      ],
+      "result": "Node-specific storage trajectory and cluster-status/node-count timelines retrieved."
+    },
+    {
+      "source": "GCP Log Explorer",
+      "query": "resource.type=\"k8s_container\" resource.labels.container_name=\"CRM-conversations\" severity>=ERROR jsonPayload.message:*",
+      "result": "No entries returned in the supplied Layer 1 query. This filters for a Kubernetes container and does not verify OpenSearch domain events or shard allocation."
+    }
   ],
-  "next_evidence_needed": [
-    "Read-only AWS domain events and CloudTrail changes for 2026-11-16 08:45–10:00 UTC.",
-    "Time-aligned shard assignments and relocation history for node WzX5t4-HQeeX8JTy0AMNaA, plus per-index store-size deltas across the domain.",
-    "The metrics deployment’s exact diff and promotion time, compared with AWS domain and index operations."
-  ]
+  "log_queries_used": [],
+  "source_urls": {
+    "grafana_alert_window": "https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-datasource=4PeY_YyVz&var-region=us-east-1&var-domainName=conversations-search&var-clientId=696084496265&var-nodeId=d_mZ4APpS8WI51_lagk5NA&from=1794822739985&to=1794826339985&viewPanel=21",
+    "grafana_seven_day_view": "https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-datasource=4PeY_YyVz&var-region=us-east-1&var-domainName=conversations-search&var-clientId=696084496265&var-nodeId=d_mZ4APpS8WI51_lagk5NA&from=now-7d&to=now&viewPanel=21",
+    "original_alert_thread": "https://gohighlevel.slack.com/archives/C097UPY34QJ/p1794824539985319?thread_ts=1794824539.985319",
+    "related_fm8p_disruption_thread": "https://gohighlevel.slack.com/archives/C097UPY34QJ/p1794823800151019?thread_ts=1794820995.087279"
+  }
 }
 
 ## Evidence
 
 ### Dashboards (incident window)
-- [Free storage — crm-messages-search node WzX5t4-HQeeX8JTy0AMNaA (below 100,000 MB threshold)](https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-datasource=4PeY_YyVz&var-region=us-east-1&var-domainName=crm-messages-search&var-clientId=696084496265&var-nodeId=WzX5t4-HQeeX8JTy0AMNaA&from=1794820894592&to=1794824494592&viewPanel=39)
-- [CPU — crm-messages-search node WzX5t4-HQeeX8JTy0AMNaA (within seven-day range)](https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-datasource=4PeY_YyVz&var-region=us-east-1&var-domainName=crm-messages-search&var-clientId=696084496265&var-nodeId=WzX5t4-HQeeX8JTy0AMNaA&from=1794820894592&to=1794824494592&viewPanel=66)
-- [JVM memory pressure — crm-messages-search node WzX5t4-HQeeX8JTy0AMNaA (near weekly baseline)](https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-datasource=4PeY_YyVz&var-region=us-east-1&var-domainName=crm-messages-search&var-clientId=696084496265&var-nodeId=WzX5t4-HQeeX8JTy0AMNaA&from=1794820894592&to=1794824494592&viewPanel=70)
-- [Indexing rate — crm-messages-search node WzX5t4-HQeeX8JTy0AMNaA (below weekly median)](https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-datasource=4PeY_YyVz&var-region=us-east-1&var-domainName=crm-messages-search&var-clientId=696084496265&var-nodeId=WzX5t4-HQeeX8JTy0AMNaA&from=1794820894592&to=1794824494592&viewPanel=69)
+- [Free storage — conversations-search node d_mZ4APpS8WI51_lagk5NA (alert window)](https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-domainName=conversations-search&var-nodeId=d_mZ4APpS8WI51_lagk5NA&from=1794822739985&to=1794826339985&viewPanel=39)
+- [Aws Elasticsearch — panel 21](https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-datasource=4PeY_YyVz&var-region=us-east-1&var-domainName=conversations-search&var-clientId=696084496265&var-nodeId=d_mZ4APpS8WI51_lagk5NA&from=1794822739985&to=1794826339985&viewPanel=21)
+- [Aws Elasticsearch — panel 21](https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&var-datasource=4PeY_YyVz&var-region=us-east-1&var-domainName=conversations-search&var-clientId=696084496265&var-nodeId=d_mZ4APpS8WI51_lagk5NA&from=now-7d&to=now&viewPanel=21)
+
+### Logs
+- [Log Explorer query](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22CRM-conversations%22%0Aseverity%3E%3DERROR%0AjsonPayload.message%3A%2A;timeRange=2026-11-16T10%3A17%3A19Z%2F2026-11-16T10%3A27%3A19Z?project=highlevel-backend)
 
 ### Related incidents
-- [Earlier crm-messages-search storage alerts and investigation summary; cause unconfirmed](https://gohighlevel.slack.com/archives/C097UPY34QJ/p1794819724914529?thread_ts=1794819724.914529)
-- [Nearby conversations-search Yellow alert; two shard movements reported, then resolved](https://gohighlevel.slack.com/archives/C097UPY34QJ/p1794819253149729?thread_ts=1794819253.149729)
+- [Same-cluster Yellow alerts #139959/#139969: node Fm8p disconnected repeatedly, then cluster returned green — 16 Nov](https://gohighlevel.slack.com/archives/C097UPY34QJ/p1794823800151019?thread_ts=1794820995.087279)
+- [Related conversations-search Yellow alert #139959](https://gohighlevel.slack.com/archives/C097UPY34QJ/p1794819253149729?thread_ts=1794819253.149729)
 
 ## Investigation Timeline
 
-**Deep dive passes**: 2
-**Worker calls**: 12
+**Deep dive passes**: 1
+**Worker calls**: 10
 
-**Total worker time**: 576.2s
+**Total worker time**: 643.4s
 
 | Step | Type | Duration | Status |
 |------|------|----------|--------|
-| session_validation | decision | 11.2s | ✓ |
-| grafana-worker | worker | 152.2s | ✓ |
-| kubectl-worker | worker | 77.4s | ✓ |
-| log-explorer-worker | worker | 55.3s | ✓ |
-| slack-worker | worker | 51.3s | ✓ |
-| triage | worker | 12.4s | ✓ |
-| triage_llm_ranking | decision | 37.9s | ✓ |
-| deep_dive_pass_1 | worker | 82.1s | ✓ |
-| follow_up_check | decision | 10.9s | ✓ |
-| deep_dive_pass_2 | worker | 51.6s | ✓ |
-| follow_up_check | decision | 12.6s | ✓ |
-| cross_validation | worker | 21.4s | ✓ |
+| session_validation | decision | 11.4s | ✓ |
+| grafana-worker | worker | 157.3s | ✓ |
+| kubectl-worker | worker | 86.5s | ✓ |
+| log-explorer-worker | worker | 79.3s | ✓ |
+| slack-worker | worker | 68.0s | ✓ |
+| triage | worker | 14.2s | ✓ |
+| triage_llm_ranking | decision | 36.6s | ✓ |
+| deep_dive_pass_1 | worker | 161.5s | ✓ |
+| follow_up_check | decision | 12.2s | ✓ |
+| cross_validation | worker | 16.3s | ✓ |
 
 ## Alert Context
 
 ```
-||*<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IX4CE8RX86LJ1|#139972 AWS ES Free Storage Space>* via CRM-conversations runbook: <https://platform.docs/alerts/runbooks/opensearch/alert-response-operational/#free-storage|here> AlertValues: Hey, looks like one of the nodes in an AWS ES cluster is having low storage space. Please check the details below, Cluster: crm-messages-search Node Id: WzX5t4-HQeeX8JTy0AMNaA Storage Space: 89008.597 MB Dashboard Link: <https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&amp;viewPanel=39&amp;var-domainName=crm-messages-search&amp;var-nodeId=WzX5t4-HQeeX8JTy0AMNaA> Help Doc : <http://platform.docs/data/faq/elasticsearch/elasticsearch-common-errors/#aws-es-free-storage-space-via-platform-critical> *<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IX4CE8RX86LJ1|#139972 AWS ES Free Storage Space>* via CRM-conversations runbook: <https://platform.docs/alerts/runbooks/opensearch/alert-response-operational/#free-storage|here> AlertValues: Hey, looks like one of the nodes in an AWS ES cluster is having low storage space. Please check the details below, Cluster: crm-messages-search Node Id: WzX5t4-HQeeX8JTy0AMNaA Storage Space: 89008.597 MB Dashboard Link: <https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&amp;viewPanel=39&amp;var-domainName=crm-messages-search&amp;var-nodeId=WzX5t4-HQeeX8JTy0AMNaA> Help Doc : <http://platform.docs/data/faq/elasticsearch/elasticsearch-common-errors/#aws-es-free-storage-space-via-platform-critical>
+||*<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IQ4P9W2VAJDKN|#139980 AWS ES Free Storage Space>* via CRM-conversations runbook: <https://platform.docs/alerts/runbooks/opensearch/alert-response-operational/#free-storage|here> AlertValues: Hey, looks like one of the nodes in an AWS ES cluster is having low storage space. Please check the details below, Cluster: conversations-search Node Id: d_mZ4APpS8WI51_lagk5NA Storage Space: 87233.054 MB Dashboard Link: https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&viewPanel=39&var-domainName=conversations-search&var-nodeId=d_mZ4APpS8WI51_lagk5NA Help Doc : http://platform.docs/data/faq/elasticsearch/elasticsearch-common-errors/#aws-es-free-storage-space-via-platform-critical *<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IQ4P9W2VAJDKN|#139980 AWS ES Free Storage Space>* via CRM-conversations runbook: <https://platform.docs/alerts/runbooks/opensearch/alert-response-operational/#free-storage|here> AlertValues: Hey, looks like one of the nodes in an AWS ES cluster is having low storage space. Please check the details below, Cluster: conversations-search Node Id: d_mZ4APpS8WI51_lagk5NA Storage Space: 87233.054 MB Dashboard Link: <https://prod.grafana.leadconnectorhq.com/d/eCN_s8yWk/aws-elasticsearch?orgId=1&amp;viewPanel=39&amp;var-domainName=conversations-search&amp;var-nodeId=d_mZ4APpS8WI51_lagk5NA> Help Doc : <http://platform.docs/data/faq/elasticsearch/elasticsearch-common-errors/#aws-es-free-storage-space-via-platform-critical>
 ```
 
 ---
-*Generated by Alert Investigation Orchestrator [Codex] at 2026-11-16T10:00:22.679Z*
+*Generated by Alert Investigation Orchestrator [Codex] at 2026-11-16T10:33:10.692Z*
