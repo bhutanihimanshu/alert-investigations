@@ -1,27 +1,27 @@
-# Alert Investigation: PubSubUnackedMessages
+# Alert Investigation: PubSubOldestUnackedAge
 
-**Investigation ID**: inv-2026-11-17-a6e8891e
+**Investigation ID**: inv-2026-11-17-4a7db10d
 **Workload**: crm-conversations-reporting-events-sub
 **Container**: crm-conversations-reporting-events-sub
 **Cluster**: N/A
 **Channel**: slack
-**Detected**: 2026-11-17T19:14:30.919Z
+**Detected**: 2026-11-17T19:27:59.438Z
 **Status**: delivering
 
 ## Root Cause
 
-**Summary**: OpenSearch write-queue saturation rejected reporting-worker writes during the growing Pub/Sub backlog. Independent application logs and throughput/latency metrics support this causal contribution, while local source explains how failed writes remain unacknowledged. The trigger for saturation is unknown; traffic surge, poison messages and quantified retry amplification are not established. Next, verify the affected OpenSearch domain and incident-time shard, disk, merge and configuration history.
+**Summary**: OpenSearch node-local write saturation is a strongly corroborated processing bottleneck: write rejections coincided with insufficient acknowledgement throughput and growing backlog. Redelivery added overhead, but its precise attribution to rejected writes versus unidentified timeouts is unresolved. The trigger for saturation is not established.
 **Confidence**: medium
-**Category**: opensearch_write_saturation
+**Category**: opensearch_node_local_write_saturation
 
 ## Triage
 
 **Primary Anomaly**: error_spike
-**Details**: OpenSearch HTTP 429 rejected_execution_exception indicates write saturation: 49/50 sampled errors showed all 8 write threads active and approximately 10,030 queued tasks against 10,000 capacity. ERROR volume peaked at 19,527 entries/min at 00:39:30 IST. Subscription backlog attribution was confirmed at 12,823,920 messages and subsequently reached 15,311,662 despite 300 pods and zero observed restarts. Elevated processing latency and expired ack deadlines support processing degradation; exact nack rates require metric-semantics validation. No historical candidate establishes an exact RCA match: ClickHouse capacity cases involve a different dependency, and traffic-surge cases lack this rejection storm.
+**Details**: OpenSearch write saturation is confirmed: 197/200 sampled errors were HTTP 429 rejected_execution_exception, including 11,054 queued tasks against capacity 10,000. Backlog reached approximately 25.3 million and oldest age 3,083s. Acknowledgements fell to 2,237/s against 9,730/s published; sent/ack reached 2.335 and expired deadlines peaked at 644,780 per five minutes. All 300 pods were ready with zero recorded restarts. Candidate inv-2026-08-13-ffc1f0ff partially matches downstream write rejection and capped consumers, but its retry overhead was much lower; no high-confidence historical RCA match exists.
 **Anomalous**: Yes
-**Deep Dive Direction**: YES — Triage direction remains correct: OpenSearch write saturation is the confirmed bottleneck; its initiating cause remains unresolved. A traffic surge is unsupported.
+**Deep Dive Direction**: YES — the triage direction remains correct: node-local OpenSearch write saturation is confirmed, but its initiating cause remains unconfirmed.
 
-Need verified endpoint-to-domain/node mapping; incident-time shard placement, disk latency, merges, indexing pressure and relocations; maintenance/configuration history before 00:09 IST; and deployed source/dependency provenance plus Pub/Sub message-ID redelivery evidence to quantify retry amplification.
+Need onset-time node-to-shard placement, shard indexing/merge statistics, and internal-task evidence; deployed base-worker artifact verification; and timeout stack traces correlated with deadline expirations to quantify retry amplification.
 
 ## Cross-Validation
 
@@ -29,126 +29,113 @@ Need verified endpoint-to-domain/node mapping; incident-time shard placement, di
 
 | Source | Finding | Agrees |
 |--------|---------|--------|
-| GCP application logs | At 00:39:30 IST, ERROR volume peaked at 19,527/min. Of 50 sampled errors, 49 showed OpenSearch HTTP 429 write rejections, with 8 active threads and approximately 10,030 queued tasks against 10,000 capacity. This directly establishes rejected writes, not the initiating cause. | ✓ |
-| Grafana and Cloud Monitoring | Backlog attribution was verified at 12,823,920 messages and subsequently reached 15,311,662. Elevated batch-processing latency and expired ack deadlines corroborate processing degradation during the rejection window. Metrics showed 300 pods and zero restart increases. | ✓ |
-| Local worker source | Failed OpenSearch items are excluded from successAckIds, supporting the mechanism from rejected writes to unacknowledged work. Deployed source and dependency provenance remain unverified. | ✓ |
-| Falsification checks | Continued acknowledgements and zero observed restart increases argue against a complete consumer outage or crash loop. Missing delivery-attempt and message-ID evidence cannot rule out redelivery. Publisher throughput was not verified, so a traffic surge is unsupported. | ✓ |
+| GCP application logs | 197/200 sampled errors were OpenSearch HTTP 429 write rejections; one rejection reported 11,054 queued tasks against capacity 10,000. | ✓ |
+| Saved CloudWatch node metrics | Only one of 12 nodes accumulated additional write rejections, reaching 124,305, with elevated indexing latency. This independently supports node-local write saturation. | ✓ |
+| Pub/Sub metrics via Grafana | Backlog reached 25.34 million; acknowledgements were 2,237/s versus 9,730/s published. Sent/ack ratio 2.335 and anomalous deadline expirations support redelivery overhead. | ✓ |
+| Kubernetes and pod metrics | 300 pods were ready with zero recorded restarts; the latest rollout preceded the incident by days. This weakens crash-loop and recent-deployment explanations. | ✓ |
 
 ### Discrepancies
-- OpenSearch saturation is corroborated as a processing bottleneck; its initiating cause and contribution relative to incoming traffic remain unresolved.
-- The reported 2,640.9 nacks/second is unvalidated: nack_requests is a GAUGE with cumulative-count semantics and observed decreases. Do not use this rate to quantify retry amplification.
-- The 49/50 rejection proportion and single-pod concentration describe a bounded sample, not fleet-wide distributions.
-- Kubernetes reads timed out; empty deployment and event arrays do not establish absence of changes. Pod-health conclusions rely on metrics.
-- Grafana subsequently returned HTTP 401. Incident-time OpenSearch node metrics, endpoint mapping, maintenance history and deployed-code provenance remain unavailable.
+- The initiating cause of node-local saturation remains unknown: historical shard placement, merges and internal tasks were not obtained.
+- Comparable node indexing rates weaken simple unequal-volume attribution; publishing was within historical p95.
+- Nack volume was below its historical median, so high absolute nacks alone do not establish an anomalous retry loop.
+- Deadline expirations followed timeout samples, but message linkage and timeout stacks are missing; their attributable fraction is unproven.
+- Local failed-item acknowledgement handling was not verified against the deployed artifact. CloudWatch evidence was reused, and fresh deep-dive queries remained pending.
 
 ## Deep Dive Findings
 
 {
   "workload": "crm-conversations-reporting-events-sub",
-  "pass": 3,
-  "conclusion": "OpenSearch write saturation remains the confirmed processing bottleneck from prior evidence. This pass did not establish its initiating cause, verify endpoint-to-domain mapping, or quantify retry amplification.",
+  "rootCauseCategory": "opensearch_node_local_write_saturation",
   "confidence": {
-    "processing_bottleneck": "high",
-    "initiating_cause": "low"
+    "processingBottleneck": "high",
+    "retryAmplification": "high",
+    "initiatingCause": "unconfirmed"
   },
-  "new_findings": {
-    "nack_metric_semantics": {
-      "verified_live": true,
-      "metric": "pubsub.googleapis.com/subscription/nack_requests",
-      "kind": "GAUGE",
-      "description": "Cumulative count of messages that were nacked. One message nacked multiple times will be counted multiple times.",
-      "sample_period_seconds": 60,
-      "ingestion_delay_seconds": 360,
-      "cached_incident_series": "84 points with 46 decreases between consecutive points.",
-      "interpretation": "Neither summing these values nor treating them as a conventional monotonic counter establishes nack throughput. The previously reported 2640.9 nacks/second remains unvalidated."
+  "summary": "Saved metrics strengthen node-local saturation attribution but do not establish its initiating cause. Historical shard placement, merge/task evidence, deployed package verification and timeout-stack attribution remain unresolved.",
+  "newFindings": [
+    {
+      "finding": "Only one of 12 nodes accumulated additional write rejections.",
+      "nodeId": "fb3A8SuER8-GIDvtq5IwFA",
+      "windowIST": "2026-11-17 23:30–2026-11-18 01:10",
+      "details": "Its rejection counter rose from 0 to 124305; the other 11 counters remained unchanged. The first observed nonzero value was 608 at 00:16 IST.",
+      "source": "/private/tmp/target-es-nodes.json",
+      "evidenceBoundary": "Reanalysis of a prior-pass CloudWatch response, not a fresh query."
     },
-    "message_identity": {
-      "local_source": "The reporting worker's explicit Pub/Sub messageId logging block is commented out. Its locally installed synchronous-pull dependency nacks unsuccessful messages by setting acknowledgement deadlines to zero.",
-      "live_log_check": "No entries matched the five queried message-ID field paths during 00:35:30–00:45:30 IST.",
-      "limitation": "This establishes an evidence gap, not absence of redelivery. Exact deployed source and dependency contents remain unverified.",
-      "retry_amplification_fraction": null
+    {
+      "finding": "Node indexing volume does not show a large imbalance.",
+      "details": "The affected node's recorded IndexingRate values were comparable to peers. Its IndexingLatency peaked at 10.906 at 00:37 IST, versus peer maxima of 1.617–5.622 across the window.",
+      "interpretation": "Weakens a simple unequal-volume explanation; unequal document cost, shard contention, merges and internal tasks remain possible.",
+      "source": "/private/tmp/target-es-nodes.json"
     },
-    "early_rejections": {
-      "window_ist": "2026-11-18 00:05:00–00:15:00",
-      "matching_entries": 0,
-      "interpretation": "The exact rejected-execution message filter returned no entries in this window. It does not establish when saturation began or negate the later confirmed rejection storm."
-    },
-    "provenance": {
-      "image_manifest_lookup": "Direct GCR manifest lookup for the supplied deployed digest returned HTTP 404.",
-      "result": "No image configuration labels or deployed dependency provenance could be retrieved."
+    {
+      "finding": "Deadline-expiration bursts followed the previously observed timeout sample.",
+      "details": "Saved one-minute expiration buckets contained 362424 expirations ending 00:46 IST and 173323 ending 00:47 IST. Previously supplied timeout entries occurred at 00:38:04–00:38:06 IST.",
+      "interpretation": "Temporal ordering is compatible with lease expiration after processing failures, but lacks batch/message linkage and cannot quantify the timeout-attributable fraction.",
+      "source": "/private/tmp/deep-expired_ack_deadlines_count.json"
     }
+  ],
+  "verificationGaps": {
+    "historicalShardPlacementAndTasks": "No onset-time shard, merge or task evidence obtained. Native authenticated browser access was unavailable; prior direct OpenSearch access returned 401.",
+    "deployedArtifact": "Registry build-metadata lookup was started using native gcloud authentication but remained pending without output. Installed package bytes and lockfile integrity were not matched.",
+    "timeoutStacks": "Fresh projected log query remained pending without output; the timed-out operation is still unidentified.",
+    "parallelExecution": "Subagent launch failed with a thread-store error."
   },
-  "access_limitations": [
-    "Grafana session revalidation returned HTTP 401; incident-time CloudWatch node metrics remain unavailable.",
-    "No native AWS/OpenSearch connector or AWS CLI was available. The prior Kubernetes secret-read denial remains unresolved.",
-    "Parallel-agent launch failed because its thread context could not be loaded.",
-    "Local Terraform and source history cannot establish applied production configuration or deployed code."
-  ],
-  "remaining_evidence_needed": [
-    "Authorized endpoint-to-domain mapping and node identity for 817397e44e2bfe92700e08758331ccf9.",
-    "Incident-time shard placement, disk latency, merges, indexing pressure and relocations.",
-    "OpenSearch maintenance and configuration audit history preceding 2026-11-18 00:09 IST.",
-    "Image-to-build provenance and Pub/Sub message-ID-level delivery records."
-  ],
-  "log_queries_used": [
+  "logQueriesUsed": [
     {
-      "query": "resource.type=\"k8s_container\" resource.labels.container_name=\"crm-conversations-reporting-worker\" severity>=ERROR jsonPayload.message=~\"rejected execution\" timestamp>=\"2026-11-17T18:35:00Z\" timestamp<=\"2026-11-17T18:45:00Z\"",
-      "limit": 5,
-      "order": "ascending",
-      "result_count": 0
-    },
-    {
-      "query": "resource.type=\"k8s_container\" resource.labels.container_name=\"crm-conversations-reporting-worker\" severity>=INFO (jsonPayload.messageId:* OR jsonPayload.metadata.messageId:* OR jsonPayload.meta.id:* OR jsonPayload.metadata.meta.id:* OR jsonPayload.message.messageId:*) timestamp>=\"2026-11-17T19:05:30Z\" timestamp<=\"2026-11-17T19:15:30Z\"",
-      "limit": 20,
-      "result_count": 0
+      "query": "resource.type=\"k8s_container\" AND resource.labels.container_name=\"crm-conversations-reporting-worker\" AND severity>=ERROR AND timestamp>=\"2026-11-17T19:05:00Z\" AND timestamp<=\"2026-11-17T19:15:00Z\" AND jsonPayload.message=~\"Platform_Services_P0_Batch_Processing_Worker_failure\"",
+      "limit": 8,
+      "projectedFields": "timestamp, message, error, stack, stacktrace, metadata.error, metadata.stack, pod_name",
+      "result": "Pending without output; not an empty-result finding."
     }
   ],
-  "log_explorer_urls": [
+  "logExplorerUrls": [
     {
-      "evidence": "Confirmed rejection storm; URL validated in the supplied prior investigation, not revalidated this pass.",
-      "url": "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22crm-conversations-reporting-worker%22%0Aseverity%3E%3DERROR%0AjsonPayload.message%3D~%22rejected%20execution%22;timeRange=2026-11-17T19%3A05%3A30Z%2F2026-11-17T19%3A15%3A30Z?project=highlevel-backend"
+      "url": "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22crm-conversations-reporting-worker%22%0Aseverity%3E%3DERROR%0AjsonPayload.message%3D~%22Platform_Services_P0_Batch_Processing_Worker_failure%22;timeRange=2026-11-17T19%3A05%3A00Z%2F2026-11-17T19%3A15%3A00Z?project=highlevel-backend",
+      "verification": "Returned timeout entries in the supplied previous pass; not reverified this pass."
     }
   ],
-  "access": "Existing local gcloud authentication and Grafana session validation; read-only. No messages posted, production changes made, or additional orchestrator investigation launched."
+  "actions": "Read-only investigation. No messages posted, production changes made or additional orchestrator investigation launched."
 }
 
 ## Evidence
 
 ### Dashboards (incident window)
-- [Unacked messages — reporting-events-sub: backlog grows past 14 million](https://prod.grafana.leadconnectorhq.com/d/ffex8olsxa9kwc?orgId=1&var-datasource=LI7N5rfVz&var-projectId=highlevel-backend&var-subscriptionId=crm-conversations-reporting-events-sub&from=1794939563000&to=1794943163000&viewPanel=1)
-- [Ack throughput — reporting-events-sub: declining acknowledgements](https://prod.grafana.leadconnectorhq.com/d/ffex8olsxa9kwc?orgId=1&var-datasource=LI7N5rfVz&var-projectId=highlevel-backend&var-subscriptionId=crm-conversations-reporting-events-sub&from=1794939563000&to=1794943163000&viewPanel=3)
-- [Expired ack deadlines — reporting-events-sub: timeout surge](https://prod.grafana.leadconnectorhq.com/d/ffex8olsxa9kwc?orgId=1&var-datasource=LI7N5rfVz&var-projectId=highlevel-backend&var-subscriptionId=crm-conversations-reporting-events-sub&from=1794939563000&to=1794943163000&viewPanel=7)
+- [Oldest age — crm-conversations-reporting-events-sub (rising above 30 minutes)](https://prod.grafana.leadconnectorhq.com/d/ffex8olsxa9kwc?orgId=1&var-datasource=LI7N5rfVz&var-projectId=highlevel-backend&var-subscriptionId=crm-conversations-reporting-events-sub&from=1794940200000&to=1794944729180&viewPanel=10)
+- [Backlog — crm-conversations-reporting-events-sub (25.34 million messages)](https://prod.grafana.leadconnectorhq.com/d/ffex8olsxa9kwc?orgId=1&var-datasource=LI7N5rfVz&var-projectId=highlevel-backend&var-subscriptionId=crm-conversations-reporting-events-sub&from=1794940200000&to=1794944729180&viewPanel=1)
+- [Acknowledgements — crm-conversations-reporting-events-sub (throughput declining)](https://prod.grafana.leadconnectorhq.com/d/ffex8olsxa9kwc?orgId=1&var-datasource=LI7N5rfVz&var-projectId=highlevel-backend&var-subscriptionId=crm-conversations-reporting-events-sub&from=1794940200000&to=1794944729180&viewPanel=3)
+- [Expired deadlines — crm-conversations-reporting-events-sub (large retry spike)](https://prod.grafana.leadconnectorhq.com/d/ffex8olsxa9kwc?orgId=1&var-datasource=LI7N5rfVz&var-projectId=highlevel-backend&var-subscriptionId=crm-conversations-reporting-events-sub&from=1794940200000&to=1794944729180&viewPanel=7)
 
 ### Logs
-- [Log Explorer query](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22crm-conversations-reporting-worker%22%0Aseverity%3E%3DERROR%0AjsonPayload.message%3D~%22rejected%20execution%22;timeRange=2026-11-17T19%3A05%3A30Z%2F2026-11-17T19%3A15%3A30Z?project=highlevel-backend)
+- [Log Explorer query](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22crm-conversations-reporting-worker%22%0Aseverity%3E%3DERROR%0AjsonPayload.message%3D~%22rejected%20execution%22;timeRange=2026-11-17T19%3A05%3A00Z%2F2026-11-17T19%3A15%3A00Z?project=highlevel-backend)
+- [Log Explorer query](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22crm-conversations-reporting-worker%22%0Aseverity%3E%3DERROR%0AjsonPayload.message%3D~%22Platform_Services_P0_Batch_Processing_Worker_failure%22;timeRange=2026-11-17T19%3A05%3A00Z%2F2026-11-17T19%3A15%3A00Z?project=highlevel-backend)
 
 ## Investigation Timeline
 
 **Deep dive passes**: 3
 **Worker calls**: 12
 
-**Total worker time**: 1344.2s
+**Total worker time**: 1270.3s
 
 | Step | Type | Duration | Status |
 |------|------|----------|--------|
-| session_validation | decision | 16.8s | ✓ |
-| grafana-worker | worker | 117.8s | ✓ |
-| kubectl-worker | worker | 92.9s | ✓ |
-| log-explorer-worker | worker | 376.7s | ✓ |
-| triage | worker | 14.1s | ✓ |
-| triage_llm_ranking | decision | 20.2s | ✓ |
-| deep_dive_pass_1 | worker | 329.0s | ✓ |
-| follow_up_check | decision | 8.8s | ✓ |
-| deep_dive_pass_2 | worker | 162.9s | ✓ |
-| follow_up_check | decision | 9.2s | ✓ |
-| deep_dive_pass_3 | worker | 176.8s | ✓ |
-| cross_validation | worker | 19.0s | ✓ |
+| session_validation | decision | 15.5s | ✓ |
+| grafana-worker | worker | 98.1s | ✓ |
+| kubectl-worker | worker | 171.3s | ✓ |
+| log-explorer-worker | worker | 336.5s | ✓ |
+| triage | worker | 12.2s | ✓ |
+| triage_llm_ranking | decision | 21.2s | ✓ |
+| deep_dive_pass_1 | worker | 265.8s | ✓ |
+| follow_up_check | decision | 9.7s | ✓ |
+| deep_dive_pass_2 | worker | 193.4s | ✓ |
+| follow_up_check | decision | 7.8s | ✓ |
+| deep_dive_pass_3 | worker | 122.4s | ✓ |
+| cross_validation | worker | 16.3s | ✓ |
 
 ## Alert Context
 
 ```
-||*<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/I3VDHD33WTV5J|#140135 Pubsub Unacked Messages above 5million>* via CRM-conversations (*<https://prod.grafana.leadconnectorhq.com/alerting/grafana/e86b2cb5-9fa9-4384-b29b-2eaf16b57717/view?orgId=1|source>*) AlertValues: Doc for this alert: <http://platform.docs/alerts/pubsub-unacked-messages/> Hey, looks like the Unacked messages in the below subscription has gone above the configured threshold. :chart_with_upwards_trend: Subscription: crm-conversations-reporting-events-sub Unacked Messages: 12823920 GCP Link: <https://console.cloud.google.com/cloudpubsub/subscription/detail/crm-conversations-reporting-events-sub?project=highlevel-backend> *<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/I3VDHD33WTV5J|#140135 Pubsub Unacked Messages above 5million>* via CRM-conversations (*<https://prod.grafana.leadconnectorhq.com/alerting/grafana/e86b2cb5-9fa9-4384-b29b-2eaf16b57717/view?orgId=1|source>*) AlertValues: Doc for this alert: <http://platform.docs/alerts/pubsub-unacked-messages/> Hey, looks like the Unacked messages in the below subscription has gone above the configured threshold. :chart_with_upwards_trend: Subscription: crm-conversations-reporting-events-sub Unacked Messages: 12823920 GCP Link: <https://console.cloud.google.com/cloudpubsub/subscription/detail/crm-conversations-reporting-events-sub?project=highlevel-backend>
+||*<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IMT2N52XLHMJZ|#140139 Pubsub Oldest Unacked Messages age above 30mins>* via CRM-conversations (*<https://prod.grafana.leadconnectorhq.com/alerting/grafana/demqv0uteacjkf/view?orgId=1|source>*) AlertValues: Doc for this alert: <http://platform.docs/alerts/pubsub-unacked-age/> Hey, looks like the age of the Oldest Unacked message in the below subscription has gone above the configured threshold. :chart_with_upwards_trend: Subscription: crm-conversations-reporting-events-sub Age of the Oldest Unacked Messages(seconds): 2056 GCP Link: <https://console.cloud.google.com/cloudpubsub/subscription/detail/crm-conversations-reporting-events-sub?project=highlevel-backend> *<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IMT2N52XLHMJZ|#140139 Pubsub Oldest Unacked Messages age above 30mins>* via CRM-conversations (*<https://prod.grafana.leadconnectorhq.com/alerting/grafana/demqv0uteacjkf/view?orgId=1|source>*) AlertValues: Doc for this alert: <http://platform.docs/alerts/pubsub-unacked-age/> Hey, looks like the age of the Oldest Unacked message in the below subscription has gone above the configured threshold. :chart_with_upwards_trend: Subscription: crm-conversations-reporting-events-sub Age of the Oldest Unacked Messages(seconds): 2056 GCP Link: <https://console.cloud.google.com/cloudpubsub/subscription/detail/crm-conversations-reporting-events-sub?project=highlevel-backend>
 ```
 
 ---
-*Generated by Alert Investigation Orchestrator [Codex] at 2026-11-17T19:37:21.965Z*
+*Generated by Alert Investigation Orchestrator [Codex] at 2026-11-17T20:01:21.124Z*
