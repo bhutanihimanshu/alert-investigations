@@ -1,6 +1,6 @@
 # Alert Investigation: Unknown
 
-**Investigation ID**: inv-2026-11-18-d62bd286
+**Investigation ID**: inv-2026-11-18-b97fd8a0
 **Workload**: crm-conversations-merge-conversations-worker
 **Container**: crm-conversations-merge-conversations-worker
 **Cluster**: workers-us-central-production-cluster
@@ -10,18 +10,18 @@
 
 ## Root Cause
 
-**Summary**: Root cause remains unconfirmed. Merge processing overlapped the reported memory warning, but no memory timeline or allocation profile connects that work to the threshold breach. Sequential pagination and configured concurrency falsify proposed whole-merge accumulation and fallback concurrency of 120; they do not exclude other allocation pressure. Verify the loaded rule and resource discrepancy, then correlate memory with active handlers and document sizes. Merge completion and zero restarts do not establish recovery or absence of customer impact.
+**Summary**: Transient memory pressure and recovery are supported, but no causal mechanism has two independent confirmations. Merge activity is temporally associated with the rise; large-document allocation, retained snapshots and concurrent handlers remain unproven. Sequential pagination weakens whole-merge buffering, while recovery and zero observed restarts weaken sustained exhaustion. Confirming causation requires page-byte measurements, allocation profiles and active-handler telemetry aligned with memory changes.
 **Confidence**: low
-**Category**: unknown
+**Category**: undetermined
 
 ## Triage
 
 **Primary Anomaly**: memory_high
-**Details**: Slack reports 90.76% memory against an 85% threshold at 22:22:04 IST on 18 Nov; metrics remain unverified because Grafana authentication failed and kubectl timed out. The surrounding ten-minute log window contains 16 slow-event warnings from one pod, with 30–90-second processing markers and no ERROR entries. Historical candidates 2 and 3 offer possible load-related memory mechanisms, but neither is confirmed for this worker. Recovery, baseline deviation and customer impact remain unknown.
+**Details**: Transient working-set rise to 465.64 MiB (~90.95% of request; 82.71% of limit), recovering to 369.72 MiB without observed restarts. CPU rose concurrently; processing rate was not elevated. Logs show 16 SLOW_EVENT warnings with sampled durations of 30–90 seconds and no ERROR entries in the checked window. Historical candidate inv-2026-11-18-d62bd286 matches the workload and unresolved mechanism, not a confirmed RCA. Kubernetes verification was unavailable.
 **Anomalous**: Yes
-**Deep Dive Direction**: YES — The triage direction remains correct: large-merge processing is associated with temporary memory elevation, but the allocation mechanism is unproven. Live flow control is 10, and the pod has zero restarts.
+**Deep Dive Direction**: YES — the triage direction remains correct: large-merge processing coincided with transient memory/CPU pressure, but the allocation mechanism remains unproven.
 
-Need allocation profiles, per-page document sizes, active-handler counts, heap/RSS and batch-commit timings during a controlled large merge; also verify deployed-source correspondence, the loaded alert rule, and the 563 MiB versus 1024 MiB configuration discrepancy. The past learning reinforces code-level memory analysis before claiming root cause.
+Need per-page document sizes, heap allocation profiles, query/commit durations, packaged BaseWorker verification, and direct active-handler telemetry. Rendered Helm values and the evaluator’s loaded alert rule are also needed to resolve the resource-limit and alert-threshold discrepancies.
 
 ## Cross-Validation
 
@@ -29,18 +29,18 @@ Need allocation profiles, per-page document sizes, active-handler counts, heap/R
 
 | Source | Finding | Agrees |
 |--------|---------|--------|
-| Slack | Reports 90.76% memory against an 85% threshold at 22:22:04 IST; no confirmed cause or recovery. | ✗ |
-| Grafana | Authentication failed; memory trajectory, baseline and correlation with merge processing remain unverified. | ✗ |
-| GCP logs | Show slow processing and merge completion at 22:26:09 IST, but do not measure memory or establish allocation-related causation. | ✗ |
-| Live Kubernetes | Deep-dive checks found the incident pod ready with zero restarts, a 563Mi memory limit and flow control of 10. These establish configuration and pod state, not the memory trigger. | ✗ |
-| Source and deployment configuration | Sequential pagination and awaited commits undermine whole-merge accumulation; live flow control contradicts assumed concurrency of 120. Full-document reads are a possible allocation source, without profiling evidence. | ✗ |
+| Grafana metrics | Working set reached 465.64 MiB and recovered to 369.72 MiB without observed restarts. CPU increased concurrently; metrics establish transient pressure, not its cause. | ✓ |
+| GCP logs | Incident-window logs show six distinct messages emitting 16 periodic SLOW_EVENT warnings and no ERROR entries. Slow processing coincided with memory pressure, but allocation size and handler concurrency are unknown. | ✓ |
+| Deployed-commit source and dependency inspection | Sequential pagination fetches up to 100 full documents and awaits each commit, weakening whole-merge buffering as an explanation. Local BaseWorker behavior explains repeated warnings; the running package was not inspected. | ✓ |
+| Live Kubernetes deployment | Deep-dive access confirmed a 512 MiB memory request and 563 MiB limit, agreeing with Grafana resource values. This does not independently establish incident-time termination history or allocation behavior. | ✓ |
+| Slack context | The thread reports similar memory recovery and suggests a large merge. Its metric claims may derive from the same telemetry; neither this report nor the historical investigation independently confirms causation. | ✓ |
 
 ### Discrepancies
-- Deep-dive Kubernetes results supersede initial timeouts; Grafana metrics remain unavailable.
-- Deployment-labelled source specifies a 1024Mi memory limit and 1 CPU; live limits are 563Mi and 550m. Rendering or override causes remain unknown.
-- The loaded alert rule is unverified, so the denominator behind 90.76% is unknown.
-- Triage describes temporary memory elevation as anomalous, but neither baseline deviation nor recovery is established.
-- No two independent sources validate the causal chain. Cross-channel correlation and a seven-day memory baseline were not obtained.
+- The measured peak was 90.95% of request but 82.71% of limit. Request-based alerting is plausible; the loaded rule and threshold semantics remain unverified.
+- Six message IDs generated 16 warnings; 30/60/90-second values are elapsed tracking intervals, not separate operations, query durations or proven concurrency.
+- Initial Kubernetes access failed; later deployment access verified resources but did not close all pod-health and event-history gaps.
+- Processing-rate metrics were not cluster-constrained; baseline resource samples covered only the current pod's lifetime.
+- Cross-container infrastructure correlation was not assessed. Missing business identity fields cannot establish absence of tenant skew.
 
 ## Deep Dive Findings
 
@@ -48,68 +48,84 @@ Need allocation profiles, per-page document sizes, active-handler counts, heap/R
   "status": "partially_verified",
   "workload": "crm-conversations-merge-conversations-worker",
   "alert_type": "PodMemoryUsageWarning",
-  "root_cause": {
-    "assessment": "Large-merge processing remains associated with memory elevation; the allocation mechanism is unproven.",
-    "confidence": "low for causation",
-    "profiling_available": false
+  "root_cause": null,
+  "assessment": "Large-merge processing remains associated with transient memory pressure. The allocation mechanism is unproven; this pass did not obtain allocation profiles, document sizes or direct active-handler telemetry.",
+  "confidence": {
+    "merge_memory_association": "medium",
+    "allocation_mechanism": "low"
   },
   "new_findings": [
     {
-      "finding": "Deployment metadata identifies commit 6f0953c144bd790d38736551a91c3ee0601e7f9a and PR 37499.",
-      "verification": "The locally inspected worker and merge helper have no differences against that commit. Metadata supports source correspondence, but image contents and packaged dependency versions were not independently verified."
+      "finding": "The 16 SLOW_EVENT warnings represent six distinct message IDs, not 16 separate slow operations.",
+      "evidence": "Five IDs each emitted three warnings; one emitted one warning within the checked window. Repeated warnings report 30, 60 and 90 seconds.",
+      "interpretation": "These are elapsed handler tracking intervals, not individual Firestore query or commit durations. They do not establish simultaneous handler count."
     },
     {
-      "finding": "The configuration discrepancy exists in the deployment-labelled commit itself.",
-      "evidence": "Its production values specify memory request 512 and limit 1024; the live incident pod specifies 512Mi and 563Mi. CPU similarly differs: configured limit 1 versus live 550m.",
-      "interpretation": "This is not explained solely by comparing production against newer local source. Rendering, overrides or mutation remain unverified."
+      "finding": "The deployed commit's lockfile resolves the worker's BaseWorker alias to version 2.27.5.",
+      "evidence": "Commit 6f0953c144bd790d38736551a91c3ee0601e7f9a, yarn.lock: @platform-core/base-worker_v2.24 resolves to 2.27.5. Local installed package matches that version and logs SLOW_EVENT periodically.",
+      "limitation": "The running image's packaged dependency was not inspected; lockfile and local package agreement are not runtime verification."
     },
     {
-      "finding": "The incident pod remains ready with zero restarts.",
-      "evidence": "Live flow control is 10; NODE_OPTIONS is --max-old-space-size=506. The container has run since 12 November.",
-      "image_digest": "sha256:f1aa7517c5d697ccac7304f5f48800c097b16ce4c96affff77297d65113edd6d"
+      "finding": "Sequential pagination is confirmed in the deployed commit's helper source.",
+      "evidence": "Each page fetches up to 100 full documents and awaits its batch commit. Message snapshots are also used internally to derive message_types.",
+      "interpretation": "Whole-merge buffering is unsupported. Avoiding the returned snapshots requires preserving message_types behavior; the allocation benefit remains unmeasured."
     },
     {
-      "finding": "The identified merge completed at 22:26:09 IST.",
-      "evidence": "Requeried logs show hasMore=false at 2026-11-18T16:56:09.493536710Z after preceding continuation records.",
-      "limitation": "Completion does not establish memory recovery or absence of customer impact."
+      "finding": "Live deployment resources remain different from the previously reported source limits.",
+      "evidence": {
+        "memory_request": "512Mi",
+        "memory_limit": "563Mi",
+        "cpu_request": "500m",
+        "cpu_limit": "550m",
+        "deployment_commit": "6f0953c144bd790d38736551a91c3ee0601e7f9a",
+        "image_digest": "sha256:f1aa7517c5d697ccac7304f5f48800c097b16ce4c96affff77297d65113edd6d"
+      },
+      "limitation": "Rendered Helm release values and the override mechanism remain unverified."
     }
   ],
-  "allocation_analysis": {
-    "verified_source_behavior": "Sequential page processing reads full documents and awaits batch commits. Message snapshots include body strings.",
-    "not_established": [
-      "Actual concurrent active handlers or per-page document bytes",
-      "Allocation hotspots, retained heap or garbage-collection contribution",
-      "Heap/RSS trajectory and batch-commit latency during the incident"
-    ],
-    "conclusion": "Neither whole-merge accumulation nor fallback concurrency of 120 is supported. A configured maximum of 10 does not prove 10 handlers were active."
+  "remaining_gaps": {
+    "per_page_document_bytes": null,
+    "heap_allocation_profile": null,
+    "query_and_commit_durations": null,
+    "direct_active_handlers": null,
+    "loaded_alert_rule": "Grafana /api/org validation succeeded, but the datasource rules request failed with HTTP 401 session.token.rotate.",
+    "sources_checked": "Deployed-commit helper and lockfile, local BaseWorker package, incident logs, read-only investigation database, live Kubernetes deployment and local Helm repositories."
   },
-  "blockers": [
-    "The live vmalert /api/v1/rules endpoint timed out; the loaded warning rule remains unverified.",
-    "Helm release-value retrieval was denied because the identity lacks permission to list release secrets.",
-    "Delegation failed because executor thread context could not be loaded; checks continued directly.",
-    "Historical allocation profiles cannot be reconstructed from the inspected source and logs. No controlled merge or production profiling was triggered."
-  ],
+  "historical_check": "inv-2026-11-18-d62bd286 explicitly records an unconfirmed root cause; it supplies no independent confirmation of the allocation mechanism.",
   "next_actions": [
-    "Inspect rendered Helm release configuration and deployment overrides to explain both resource-limit discrepancies.",
-    "Retrieve the evaluator's loaded PodMemoryUsageWarning rule before interpreting 90.76% as a request-based or limit-based percentage.",
-    "During an authorized controlled reproduction, measure allocations, document bytes per page, active handlers, heap/RSS and batch-commit timings."
+    "Measure page bytes, query/commit durations, heap allocations and active handlers in an authorized nonproduction reproduction.",
+    "Inspect the running image's dependency artifact and obtain rendered Helm values through an authorized read path.",
+    "Retrieve the evaluator's loaded alert expression after Grafana authentication is restored."
   ],
-  "access": "Read-only kubectl, gcloud and Helm using existing authentication; local Git inspection and direct evaluator HTTP request.",
   "log_queries_used": [
-    "resource.type=\"k8s_container\" resource.labels.container_name=\"crm-conversations-merge-conversations-worker\" resource.labels.cluster_name=\"workers-us-central-production-cluster\" timestamp>=\"2026-11-18T16:40:04Z\" timestamp<=\"2026-11-18T17:00:04Z\" jsonPayload.message=\"Merge-conversations pages processed\" jsonPayload.sourceConversationId=\"XgNHIGZqVCmTfd1PRy2Q\""
+    {
+      "project": "highlevel-backend",
+      "query": "resource.type=\"k8s_container\" resource.labels.container_name=\"crm-conversations-merge-conversations-worker\" resource.labels.cluster_name=\"workers-us-central-production-cluster\" timestamp>=\"2026-11-18T16:47:00Z\" timestamp<=\"2026-11-18T16:57:00Z\" severity=WARNING jsonPayload.message=\"[SLOW_EVENT]\"",
+      "limit": 20,
+      "result": "16 entries, six distinct message IDs; projected timestamps, IDs, procTimeSec and slowEventLogCount."
+    },
+    {
+      "project": "highlevel-backend",
+      "query": "resource.type=\"k8s_container\" resource.labels.container_name=\"crm-conversations-merge-conversations-worker\" resource.labels.cluster_name=\"workers-us-central-production-cluster\" timestamp>=\"2026-11-18T16:47:00Z\" timestamp<=\"2026-11-18T16:57:00Z\" jsonPayload.message=\"Merge-conversations pages processed\"",
+      "limit": 5,
+      "result": "Five completion records returned; sampled records contain counts but no page-byte or query/commit timing fields."
+    }
   ],
   "log_explorer_urls": [
-    "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22crm-conversations-merge-conversations-worker%22%0Aresource.labels.cluster_name%3D%22workers-us-central-production-cluster%22%0AjsonPayload.message%3D%22Merge-conversations%20pages%20processed%22%0AjsonPayload.sourceConversationId%3D%22XgNHIGZqVCmTfd1PRy2Q%22;timeRange=2026-11-18T16%3A40%3A04Z%2F2026-11-18T17%3A00%3A04Z?project=highlevel-backend"
-  ]
+    "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22crm-conversations-merge-conversations-worker%22%0Aresource.labels.cluster_name%3D%22workers-us-central-production-cluster%22%0Aseverity%3DWARNING%0AjsonPayload.message%3D%22%5BSLOW_EVENT%5D%22;timeRange=2026-11-18T16%3A47%3A00Z%2F2026-11-18T16%3A57%3A00Z?project=highlevel-backend"
+  ],
+  "access": "Existing gcloud credentials, explicit Kubernetes context and Grafana session used. Delegation failed to load executor context. No production changes, messages or new investigations."
 }
 
 ## Evidence
 
-### Logs
-- [Log Explorer query](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22crm-conversations-merge-conversations-worker%22%0Aresource.labels.cluster_name%3D%22workers-us-central-production-cluster%22%0Aseverity%3DWARNING%0AjsonPayload.message%3D%22%5BSLOW_EVENT%5D%22;timeRange=2026-11-18T16%3A47%3A04Z%2F2026-11-18T16%3A57%3A04Z?project=highlevel-backend)
-- [Log Explorer query](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22crm-conversations-merge-conversations-worker%22%0Aresource.labels.cluster_name%3D%22workers-us-central-production-cluster%22%0AjsonPayload.message%3D%22Merge-conversations%20pages%20processed%22%0AjsonPayload.sourceConversationId%3D%22XgNHIGZqVCmTfd1PRy2Q%22;timeRange=2026-11-18T16%3A40%3A04Z%2F2026-11-18T17%3A00%3A04Z?project=highlevel-backend)
+### Dashboards (incident window)
+- [Memory — crm-conversations-merge-conversations-worker: incident rise and return near baseline](https://prod.grafana.leadconnectorhq.com/d/a4859d4a-1e0a-4ae3-b9b2-d04d366cf29b?orgId=1&var-datasource=ber8nnhvgsjy8f&var-cluster=workers-us-central-production-cluster&var-container=crm-conversations-merge-conversations-worker&var-pod_name=All&var-gcpProject=highlevel-backend&from=1795018923000&to=1795023831000&viewPanel=30)
+- [Pod timeline — crm-conversations-merge-conversations-worker: pod predates incident by six days](https://prod.grafana.leadconnectorhq.com/d/a4859d4a-1e0a-4ae3-b9b2-d04d366cf29b?orgId=1&var-datasource=ber8nnhvgsjy8f&var-cluster=workers-us-central-production-cluster&var-container=crm-conversations-merge-conversations-worker&var-pod_name=All&var-gcpProject=highlevel-backend&from=1795018923000&to=1795023831000&viewPanel=52)
 
 ### Related incidents
+- [Team reports transient memory spike and recovery — 18 Nov](https://gohighlevel.slack.com/archives/C097UPY34QJ/p1795022977193059)
+- [Further investigation requested from Sandeep — 18 Nov](https://gohighlevel.slack.com/archives/C097UPY34QJ/p1795022988060569)
 - [Production pipeline success includes merge worker — 12 Nov](https://gohighlevel.slack.com/archives/G01FL9T6UGL/p1794489923135039)
 - [Conversations-search CPU alert approximately 40 minutes earlier — 18 Nov](https://gohighlevel.slack.com/archives/C097UPY34QJ/p1795018336200519)
 
@@ -118,29 +134,29 @@ Need allocation profiles, per-page document sizes, active-handler counts, heap/R
 **Deep dive passes**: 3
 **Worker calls**: 13
 
-**Total worker time**: 1536.8s
+**Total worker time**: 920.0s
 
 | Step | Type | Duration | Status |
 |------|------|----------|--------|
-| session_validation | decision | 12.6s | ✓ |
-| grafana-worker | worker | 43.7s | ✓ |
-| kubectl-worker | worker | 257.4s | ✓ |
-| log-explorer-worker | worker | 522.1s | ✓ |
-| slack-worker | worker | 226.7s | ✓ |
-| triage | worker | 18.9s | ✓ |
-| triage_llm_ranking | decision | 36.7s | ✓ |
-| deep_dive_pass_1 | worker | 148.7s | ✓ |
-| follow_up_check | decision | 11.6s | ✓ |
-| deep_dive_pass_2 | worker | 118.8s | ✓ |
-| follow_up_check | decision | 12.9s | ✓ |
-| deep_dive_pass_3 | worker | 107.4s | ✓ |
-| cross_validation | worker | 19.4s | ✓ |
+| session_validation | decision | 12.1s | ✓ |
+| grafana-worker | worker | 112.6s | ✓ |
+| kubectl-worker | worker | 87.0s | ✓ |
+| log-explorer-worker | worker | 77.2s | ✓ |
+| slack-worker | worker | 66.2s | ✓ |
+| triage | worker | 15.3s | ✓ |
+| triage_llm_ranking | decision | 31.7s | ✓ |
+| deep_dive_pass_1 | worker | 212.5s | ✓ |
+| follow_up_check | decision | 11.2s | ✓ |
+| deep_dive_pass_2 | worker | 162.9s | ✓ |
+| follow_up_check | decision | 10.3s | ✓ |
+| deep_dive_pass_3 | worker | 101.3s | ✓ |
+| cross_validation | worker | 19.8s | ✓ |
 
 ## Alert Context
 
 ```
-||*<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/I6PHPTWENA8SI|#140219 PodMemoryUsageWarning>* via CRM-conversations (*<https://vmalert.platform.prd.msgsndr.net/vmalert/alert?group_id=15733886712733289648&amp;alert_id=12026186840929978403|source>*) summary: Workload Memory Usage Above Warning Threshold dashboard: <https://prod.grafana.leadconnectorhq.com/d/iRRI_ay4k/crm-master?orgId=1&amp;viewPanel=40&amp;var-team=crm&amp;var-cluster=workers-us-central-production-cluster&amp;var-subTeam=conversations&amp;var-container=crm-conversations-merge-conversations-worker&amp;from=now-180m&amp;to=now|here> threshold: 85% description: Workload: crm-conversations-merge-conversations-worker, Cluster: workers-us-central-production-cluster current_value: 90.76% *<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/I6PHPTWENA8SI|#140219 PodMemoryUsageWarning>* via CRM-conversations (*<https://vmalert.platform.prd.msgsndr.net/vmalert/alert?group_id=15733886712733289648&amp;alert_id=12026186840929978403|source>*) summary: Workload Memory Usage Above Warning Threshold dashboard: <https://prod.grafana.leadconnectorhq.com/d/iRRI_ay4k/crm-master?orgId=1&amp;viewPanel=40&amp;var-team=crm&amp;var-cluster=workers-us-central-production-cluster&amp;var-subTeam=conversations&amp;var-container=crm-conversations-merge-conversations-worker&amp;from=now-180m&amp;to=now|here> threshold: 85% description: Workload: crm-conversations-merge-conversations-worker, Cluster: workers-us-central-production-cluster current_value: 90.76%
+||*<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/I6PHPTWENA8SI|#140219 PodMemoryUsageWarning>* via CRM-conversations (*<https://vmalert.platform.prd.msgsndr.net/vmalert/alert?group_id=15733886712733289648&alert_id=12026186840929978403|source>*) summary: Workload Memory Usage Above Warning Threshold dashboard: <https://prod.grafana.leadconnectorhq.com/d/iRRI_ay4k/crm-master?orgId=1&viewPanel=40&var-team=crm&var-cluster=workers-us-central-production-cluster&var-subTeam=conversations&var-container=crm-conversations-merge-conversations-worker&from=now-180m&to=now|here> threshold: 85% description: Workload: crm-conversations-merge-conversations-worker, Cluster: workers-us-central-production-cluster current_value: 90.76% *<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/I6PHPTWENA8SI|#140219 PodMemoryUsageWarning>* via CRM-conversations (*<https://vmalert.platform.prd.msgsndr.net/vmalert/alert?group_id=15733886712733289648&amp;alert_id=12026186840929978403|source>*) summary: Workload Memory Usage Above Warning Threshold dashboard: <https://prod.grafana.leadconnectorhq.com/d/iRRI_ay4k/crm-master?orgId=1&amp;viewPanel=40&amp;var-team=crm&amp;var-cluster=workers-us-central-production-cluster&amp;var-subTeam=conversations&amp;var-container=crm-conversations-merge-conversations-worker&amp;from=now-180m&amp;to=now|here> threshold: 85% description: Workload: crm-conversations-merge-conversations-worker, Cluster: workers-us-central-production-cluster current_value: 90.76%
 ```
 
 ---
-*Generated by Alert Investigation Orchestrator [Codex] at 2026-11-18T17:26:06.274Z*
+*Generated by Alert Investigation Orchestrator [Codex] at 2026-11-18T17:53:39.177Z*
