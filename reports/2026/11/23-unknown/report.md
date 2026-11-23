@@ -1,27 +1,27 @@
 # Alert Investigation: Unknown
 
-**Investigation ID**: inv-2026-11-23-25f881e3
+**Investigation ID**: inv-2026-11-23-de589c50
 **Workload**: CRM-conversations
 **Container**: CRM-conversations
 **Cluster**: servers-usc1-prd-cluster
 **Channel**: slack
-**Detected**: 2026-11-23T11:15:41.929Z
+**Detected**: 2026-11-23T11:26:21.325Z
 **Status**: delivering
 
 ## Root Cause
 
-**Summary**: A low-volume Outlook delivery latency spike is corroborated by metrics and two approximately 69-second failed delivery attempts. Microsoft Graph mailbox-move failures are associated with those attempts, but evidence does not establish whether upstream waiting, SDK retries or subsequent authentication caused the delay. Root cause remains unconfirmed.
+**Summary**: Transient live-chat latency is corroborated by metrics and human observations. Firestore RunQuery delay is the leading reported explanation, but independent request-level verification and the underlying Firestore trigger remain unresolved. Retrieve the referenced trace and match it to server or SDET request timings before confirming causation.
 **Confidence**: low
-**Category**: undetermined
+**Category**: unconfirmed_dependency_latency
 
 ## Triage
 
 **Primary Anomaly**: none
-**Details**: Latency is the primary anomaly, outside the supplied enum: POST /leadconnector/outlook/deliver reached histogram-capped p95 of 30s, with approximately 2 of 13 requests exceeding 30s. Traffic and average resources were not elevated; no restarts were observed. Historical candidates match misparsed CRM-conversations/Unknown labels, not this incident. The 16:27 IST CORS error peak coincided with scale-out and precedes the latency rise at 16:40 IST; causation is unproven.
+**Details**: Confirmed transient route-latency anomaly: conversations-api POST /conversations/providers/live-chat/messages P95 reached 19s at 16:49–16:53 IST, dropping below 1s at 16:54. Traffic peaked at only 10 requests/minute; average CPU and memory were normal, with no observed restarts. Redis resets at 16:55 occurred after latency recovery and do not establish causation. None of the 20 historical candidates matches the observed failure pattern.
 **Anomalous**: Yes
-**Deep Dive Direction**: YES — The triage direction remains correct: both ~69-second requests encountered Microsoft Graph mailbox-move errors, but the delay mechanism is unconfirmed.
+**Deep Dive Direction**: YES — Request-level latency remains the correct direction, but Firestore is proven to explain only the five lookup/upsert delays, not the live-chat spike.
 
-Need Graph per-attempt durations, upstream statuses, Retry-After values and actual retry timings, plus token-acquisition completion and lookup/hydration/lock/refresh durations to distinguish upstream waiting, SDK backoff and authentication delay.
+Need incident-time SDET client request IDs/timings and matching server logs or retained dependency spans for the missing 15–20s live-chat request to determine its root cause.
 
 ## Cross-Validation
 
@@ -29,116 +29,116 @@ Need Graph per-attempt durations, upstream statuses, Retry-After values and actu
 
 | Source | Finding | Agrees |
 |--------|---------|--------|
-| Grafana | Route latency rose to histogram-capped p95 of 30s around 16:40 IST; approximately 2 of 13 requests exceeded 30s. Traffic and average resource usage were not elevated. | ✓ |
-| Application logs | Two delivery attempts failed after approximately 69s at 16:38:05 and 16:40:08 IST, consistent with the latency anomaly. Initial token hydration completed within 13ms; Graph attempt and subsequent authentication durations are unavailable. | ✓ |
-| Kubernetes | Zero restarts and 30/30 current pods ready support the absence of a restart-driven incident. Scale-out at 16:27 IST preceded the slow requests but has no demonstrated causal connection. | ✓ |
-| Slack | Confirms alert acknowledgement and an Outlook error-handling deployment approximately five hours earlier; provides no independent diagnosis of the delay. | ✗ |
+| Grafana | Confirms route P95 of 19s at 16:49–16:53 IST, recovering below 1s at 16:54. Does not identify the slow dependency. | ✓ |
+| Slack request-level report | Reports a 17s live-chat request containing a 16s Firestore RunQuery span near the spike. Underlying trace was not independently inspected. | ✓ |
+| Cloud Logging | Confirms three HTTP 201 live-chat completions, but lacks durations and dependency spans; cannot independently corroborate Firestore attribution. | ✗ |
+| Kubernetes and resource metrics | Normal average resources and zero observed application restarts weaken capacity or crash explanations, but do not exclude individual pod stalls. | ✓ |
+| Firestore screenshot | Database-wide DEADLINE_EXCEEDED counts over seven days do not link Firestore delays to this request. | ✗ |
 
 ### Discrepancies
-- Metrics and logs corroborate slow requests, not the exact delay mechanism. Mailbox-move errors were reported in an earlier pass but their nested details were not reverified in the supplied deep dive.
-- The 30s percentile is histogram-capped, not a maximum request duration; approximately 69s attempts are compatible with it.
-- Fast hydration argues against initial token-store delay but does not exclude later token refresh, authentication, Graph waiting or retry backoff. Local source correspondence to the deployed image is unverified.
-- CORS errors peaked at 16:27 IST, before the latency rise; no causal connection is established. Cross-container infrastructure checks were not performed.
-- Falsification remains incomplete: per-attempt Graph timing and authentication completion are needed to test upstream-delay attribution. Fleet averages cannot exclude individual-pod or event-loop stalls; a shared trace ID prevents unique request correlation by trace alone.
+- Firestore causation has only one request-level report; two independent sources have not validated the causal chain.
+- Slack reports 20–70 requests/minute and P99; cluster-filtered Grafana reports a peak of 10 requests/minute and P95. Scopes require reconciliation.
+- Redis errors occurred at 16:55, after the principal latency spike recovered at 16:54, undermining Redis attribution.
+- Firestore delays on five lookup/upsert requests do not prove causation for the live-chat route.
+- Falsification remains pending: inspect the reported trace for matching route, cluster and timestamp, and verify RunQuery occupied the request's critical path. A mismatch or overlapping nonblocking span would undermine attribution.
 
 ## Deep Dive Findings
 
 {
-  "workload": "leadconnector-api",
-  "route": "POST /leadconnector/outlook/deliver",
-  "conclusion": "New evidence argues against slow initial token lookup/hydration: both requests logged KV2_READ_OK within 13ms of token-acquisition start. The remaining approximately 69 seconds cannot be separated into Graph request time, retry backoff or subsequent authentication work.",
-  "new_findings": [
+  "summary": "New thread evidence reports the missing 17-second live-chat request with a 16-second Firestore RunQuery span. This strengthens the Firestore hypothesis, but the underlying trace and SDET client timings were not recovered independently.",
+  "root_cause": {
+    "candidate": "Firestore RunQuery delay on the live-chat request",
+    "confidence": "medium",
+    "underlying_firestore_trigger": "Unresolved",
+    "status": "Reported request-level attribution; independent span verification remains pending."
+  },
+  "findings": [
     {
-      "pod_suffix": "zv2xf",
-      "timestamps_ist": {
-        "token_start": "2026-11-23T16:36:55.738+05:30",
-        "kv2_read_ok": "2026-11-23T16:36:55.750+05:30",
-        "delivery_failure": "2026-11-23T16:38:05.001+05:30"
-      },
-      "token_start_to_kv2_read_ok_ms": 12.02,
-      "kv2_read_ok_to_failure_seconds": 69.251
+      "source": "Slack reply posted at 17:20:19 IST",
+      "observation": "Reports a live-chat request at 16:48 IST lasting 17 seconds, including a 16-second RunQuery operation. Also reports four live-chat requests exceeding 10 seconds during 16:30–17:05 IST, all HTTP 201.",
+      "url": "https://gohighlevel.slack.com/archives/C097UPY34QJ/p1795434619320709",
+      "limitation": "No request ID, trace permalink or exported spans accompany the text."
     },
     {
-      "pod_suffix": "4rj8v",
-      "timestamps_ist": {
-        "token_start": "2026-11-23T16:38:59.388+05:30",
-        "kv2_read_ok": "2026-11-23T16:38:59.398+05:30",
-        "delivery_failure": "2026-11-23T16:40:08.795+05:30"
-      },
-      "token_start_to_kv2_read_ok_ms": 10.232,
-      "kv2_read_ok_to_failure_seconds": 69.396
+      "source": "Attached screenshot, visually inspected",
+      "observation": "Shows Firestore DEADLINE_EXCEEDED request counts for the default database, grouped by API method over seven days.",
+      "url": "https://gohighlevel.enterprise.slack.com/files/U06TDEJE6KE/F0CM08U5RCY/image.png",
+      "limitation": "The attachment is a database metric chart, not the claimed live-chat trace; it cannot establish request-level causation."
+    },
+    {
+      "source": "Fresh Cloud Logging query",
+      "observation": "Returned three live-chat POST completions, all HTTP 201, at 16:47:08, 16:49:18 and 16:53:54 IST. No additional matching completion was recovered.",
+      "trace_ids": [
+        "d6ef8649-0030-44c8-8b82-3f291a48ac3d",
+        "fe8b6584-69b6-43ee-b9c2-6590f437b076",
+        "cd7cf725-aedd-48bc-a67b-b84a1f9a0cf6"
+      ],
+      "limitation": "Returned projected fields did not contain durations or dependency spans."
     }
   ],
-  "interpretation": {
-    "source_confirmation": "Local twoWaySyncTokenStore.ts emits KV2_READ_OK after assigning hydrated tokens and applying expiry. getAccessToken checks expiry afterward.",
-    "authentication": "No matching Outlook expiry, refresh, lock or token-completion message appeared in the filtered results. This weakens an authentication-delay hypothesis but does not conclusively exclude it.",
-    "graph": "Local SDK retries HTTP 429, 503 and 504 and honors Retry-After. Actual upstream statuses, attempt durations and sleep intervals remain unavailable.",
-    "prior_evidence": "Mailbox-move error details remain supported by the supplied previous pass; this pass reconfirmed failure timestamps, not those nested error details."
-  },
-  "confidence": {
-    "fast_initial_hydration": "medium",
-    "exact_delay_mechanism": "unconfirmed"
-  },
-  "limitations": [
-    "Local source correspondence to the deployed image remains unverified.",
-    "Both requests share one trace identifier; timestamps and pods distinguish them.",
-    "No per-attempt Graph spans or complete authentication duration measurements were recovered."
+  "evidence_gaps": [
+    "No incident-time SDET client request IDs or timing artifacts found in the alert thread or targeted Slack search.",
+    "No callable Uptrace connector or documented authenticated access path was found in the inspected local tools and skills.",
+    "Slack's reported 20–70 requests/minute and p99 differ from the supplied cluster-filtered metrics of 10 requests/minute and P95; scopes need reconciliation.",
+    "The five previously matched Firestore reads remain evidence for lookup/upsert delays, not independent proof for live-chat."
   ],
-  "needed_evidence": "Distinct delivery-attempt IDs; Graph attempt start/end, status, Retry-After and actual retry sleep; token-acquisition completion and lookup/hydration/lock/refresh durations. Exclude tokens and email content.",
-  "log_queries_used": {
-    "base": "resource.type=\"k8s_container\" resource.labels.container_name=\"leadconnector-api\" resource.labels.cluster_name=\"servers-usc1-prd-cluster\" timestamp>=\"2026-11-23T11:06:50Z\" timestamp<=\"2026-11-23T11:10:15Z\"",
-    "failure_filter": "jsonPayload.message=\"[OUTLOOK_DELIVER_REPLY_FAILED]\"",
-    "timing_filter": "(resource.labels.pod_name=\"leadconnector-api-5d589d5c66-zv2xf\" OR resource.labels.pod_name=\"leadconnector-api-5d589d5c66-4rj8v\") (jsonPayload.message=~\"[Tt]oken|[Rr]etry|[Gg]raph|OUTLOOK_DELIVER|[Mm]ail delivery|[Ll]ock|KV2\" OR jsonPayload.message:\"TFYDe1F33wsDEzePC1KN\")",
-    "results": "Failure query returned 2 records with limit=5; timing query returned 16 records with limit=80."
-  },
+  "log_queries_used": [
+    {
+      "project": "highlevel-backend",
+      "query": "resource.type=\"k8s_container\" resource.labels.container_name=\"conversations-api\" resource.labels.cluster_name=\"servers-usc1-prd-cluster\" timestamp>=\"2026-11-23T11:17:00Z\" timestamp<\"2026-11-23T11:26:00Z\" (httpRequest.requestUrl:\"/live-chat/messages\" OR jsonPayload.message:\"/live-chat/messages\")",
+      "limit": 20,
+      "returned_entries": 3
+    }
+  ],
   "log_explorer_urls": [
-    "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22leadconnector-api%22%0Aresource.labels.cluster_name%3D%22servers-usc1-prd-cluster%22%0AjsonPayload.message%3D%22%5BOUTLOOK_DELIVER_REPLY_FAILED%5D%22;timeRange=2026-11-23T11%3A06%3A50Z%2F2026-11-23T11%3A10%3A15Z?project=highlevel-backend"
+    "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%20resource.labels.container_name%3D%22conversations-api%22%20resource.labels.cluster_name%3D%22servers-usc1-prd-cluster%22%20%28httpRequest.requestUrl%3A%22%2Flive-chat%2Fmessages%22%20OR%20jsonPayload.message%3A%22%2Flive-chat%2Fmessages%22%29;timeRange=2026-11-23T11%3A17%3A00Z%2F2026-11-23T11%3A26%3A00Z?project=highlevel-backend"
   ],
-  "access": "Existing authenticated gcloud CLI and local source; read-only. No production changes or messages posted."
+  "next_action": "Retrieve the 16:48 IST Uptrace trace referenced in the Slack reply, verify route, cluster and parent-child timing, then match its request ID to SDET evidence. Investigate Firestore's underlying trigger only after that attribution is confirmed.",
+  "access_path": "Existing validated Slack session and authenticated gcloud CLI; read-only. No messages posted or production changes made."
 }
 
 ## Evidence
 
 ### Dashboards (incident window)
-- [Outlook delivery latency — leadconnector-api: p95 reaches 30s at 16:40 IST](https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f?orgId=1&from=1795430741000&to=1795434341000&var-datasource=ber8nnhvgsjy8f&var-cluster=servers-usc1-prd-cluster&var-container=leadconnector-api&var-method=POST&var-route=%2Fleadconnector%2Foutlook%2Fdeliver&var-pod_name=All&var-minLatency=0&var-maxLatency=100000&viewPanel=17)
-- [Outlook delivery traffic — leadconnector-api: low volume and response classes](https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f?orgId=1&from=1795430741000&to=1795434341000&var-datasource=ber8nnhvgsjy8f&var-cluster=servers-usc1-prd-cluster&var-container=leadconnector-api&var-method=POST&var-route=%2Fleadconnector%2Foutlook%2Fdeliver&var-pod_name=All&viewPanel=1)
+- [P95 latency — conversations-api live-chat POST: transient 19s spike](https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f?orgId=1&from=1795431381000&to=1795434360000&var-datasource=ber8nnhvgsjy8f&var-cluster=servers-usc1-prd-cluster&var-container=conversations-api&var-method=POST&var-route=%2Fconversations%2Fproviders%2Flive-chat%2Fmessages&var-pod_name=All&var-minLatency=0&var-maxLatency=100000&var-latencyThreshold=10&viewPanel=17)
+- [Request rate — conversations-api live-chat POST: sparse, elevated traffic](https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f?orgId=1&from=1795431381000&to=1795434360000&var-datasource=ber8nnhvgsjy8f&var-cluster=servers-usc1-prd-cluster&var-container=conversations-api&var-method=POST&var-route=%2Fconversations%2Fproviders%2Flive-chat%2Fmessages&var-pod_name=All&viewPanel=1)
 
 ### Logs
-- [Log Explorer query](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22leadconnector-api%22%0Aresource.labels.cluster_name%3D%22servers-usc1-prd-cluster%22%0Aseverity%3E%3DERROR%0A-jsonPayload.message%3D~%22Failed%20to%20configure%20CORS%20for%20storage%20buckets%22;timeRange=2026-11-23T10%3A52%3A00Z%2F2026-11-23T11%3A05%3A00Z?project=highlevel-backend)
-- [Log Explorer query](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22leadconnector-api%22%0Aresource.labels.cluster_name%3D%22servers-usc1-prd-cluster%22%0AjsonPayload.message%3D%22%5BOUTLOOK_DELIVER_REPLY_FAILED%5D%22;timeRange=2026-11-23T11%3A06%3A50Z%2F2026-11-23T11%3A10%3A15Z?project=highlevel-backend)
+- [Log Explorer query](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22conversations-api%22%0Aresource.labels.cluster_name%3D%22servers-usc1-prd-cluster%22%0Aseverity%3E%3DERROR%0AjsonPayload.message%3D~%22ECONNRESET%7CDYNAMIC_CONFIG_PACKAGE_ERROR%22;timeRange=2026-11-23T11%3A20%3A00Z%2F2026-11-23T11%3A30%3A00Z?project=highlevel-backend)
 
 ### Related incidents
-- [Outlook error handling change and production promotion — 23 Nov](https://gohighlevel.slack.com/archives/C096N87SBFW/p1795064245350139)
-- [Gmail delivery fix deployed and production sanity passed — 23 Nov](https://gohighlevel.slack.com/archives/C096N87SBFW/p1795411885150389)
+- [Outlook delivery latency alert 11 minutes earlier — 23 Nov](https://gohighlevel.slack.com/archives/C097UPY34QJ/p1795432541929029)
+- [Conversations isAutoReply fix promoted before alert — 23 Nov](https://gohighlevel.slack.com/archives/C013CG4N7U0/p1795423225028339)
+- [Inbound email extraction change: production build shared — 23 Nov](https://gohighlevel.slack.com/archives/C096N87SBFW/p1795414948575729)
 
 ## Investigation Timeline
 
 **Deep dive passes**: 3
 **Worker calls**: 13
 
-**Total worker time**: 1442.3s
+**Total worker time**: 1722.0s
 
 | Step | Type | Duration | Status |
 |------|------|----------|--------|
-| session_validation | decision | 16.6s | ✓ |
-| grafana-worker | worker | 87.8s | ✓ |
-| kubectl-worker | worker | 210.0s | ✓ |
-| log-explorer-worker | worker | 361.4s | ✓ |
-| slack-worker | worker | 69.5s | ✓ |
-| triage | worker | 18.4s | ✓ |
-| triage_llm_ranking | decision | 42.8s | ✓ |
-| deep_dive_pass_1 | worker | 276.1s | ✓ |
-| follow_up_check | decision | 16.5s | ✓ |
-| deep_dive_pass_2 | worker | 156.6s | ✓ |
-| follow_up_check | decision | 13.1s | ✓ |
-| deep_dive_pass_3 | worker | 152.6s | ✓ |
-| cross_validation | worker | 21.0s | ✓ |
+| session_validation | decision | 10.7s | ✓ |
+| grafana-worker | worker | 110.5s | ✓ |
+| kubectl-worker | worker | 138.3s | ✓ |
+| log-explorer-worker | worker | 287.4s | ✓ |
+| slack-worker | worker | 65.3s | ✓ |
+| triage | worker | 15.8s | ✓ |
+| triage_llm_ranking | decision | 39.8s | ✓ |
+| deep_dive_pass_1 | worker | 467.4s | ✓ |
+| follow_up_check | decision | 15.3s | ✓ |
+| deep_dive_pass_2 | worker | 391.4s | ✓ |
+| follow_up_check | decision | 14.2s | ✓ |
+| deep_dive_pass_3 | worker | 145.4s | ✓ |
+| cross_validation | worker | 20.4s | ✓ |
 
 ## Alert Context
 
 ```
-||*<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IXTQ3FQYDIJBP|#140711 HTTPLatencyPerSubTeam>* via CRM-conversations (*<https://vmalert.platform.prd.msgsndr.net/vmalert/alert?group_id=7041113084036845597&alert_id=15042120747186146505|source>*) cluster: servers-usc1-prd-cluster summary: Application Latency Above Threshold threshold: 10s description: Latency for application - `leadconnector-api` route `/leadconnector/outlook/deliver` [POST] on servers-usc1-prd-cluster is above threshold for the last 5 minutes current_value: 30s dashboard_link: <https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f/api-requests-overview?orgId=1&from=now-30m&to=now&var-datasource=ber8nnhvgsjy8f&var-container=leadconnector-api&var-method=POST&var-route=/leadconnector/outlook/deliver&var-pod_name=All&var-minLatency=0&var-maxLatency=100000&var-latencyThreshold=5|here> *<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IXTQ3FQYDIJBP|#140711 HTTPLatencyPerSubTeam>* via CRM-conversations (*<https://vmalert.platform.prd.msgsndr.net/vmalert/alert?group_id=7041113084036845597&amp;alert_id=15042120747186146505|source>*) cluster: servers-usc1-prd-cluster summary: Application Latency Above Threshold threshold: 10s description: Latency for application - `leadconnector-api` route `/leadconnector/outlook/deliver` [POST] on servers-usc1-prd-cluster is above threshold for the last 5 minutes current_value: 30s dashboard_link: <https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f/api-requests-overview?orgId=1&amp;from=now-30m&amp;to=now&amp;var-datasource=ber8nnhvgsjy8f&amp;var-container=leadconnector-api&amp;var-method=POST&amp;var-route=/leadconnector/outlook/deliver&amp;var-pod_name=All&amp;var-minLatency=0&amp;var-maxLatency=100000&amp;var-latencyThreshold=5|here>
+||*<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/ITSHV8MBMKX9M|#140713 HTTPLatencyPerSubTeam>* via CRM-conversations (*<https://vmalert.platform.prd.msgsndr.net/vmalert/alert?group_id=7041113084036845597&alert_id=16999526078515305045|source>*) cluster: servers-usc1-prd-cluster summary: Application Latency Above Threshold threshold: 10s description: Latency for application - `conversations-api` route `/conversations/providers/live-chat/messages` [POST] on servers-usc1-prd-cluster is above threshold for the last 5 minutes current_value: 19s dashboard_link: <https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f/api-requests-overview?orgId=1&from=now-30m&to=now&var-datasource=ber8nnhvgsjy8f&var-container=conversations-api&var-method=POST&var-route=/conversations/providers/live-chat/messages&var-pod_name=All&var-minLatency=0&var-maxLatency=100000&var-latencyThreshold=5|here> *<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/ITSHV8MBMKX9M|#140713 HTTPLatencyPerSubTeam>* via CRM-conversations (*<https://vmalert.platform.prd.msgsndr.net/vmalert/alert?group_id=7041113084036845597&amp;alert_id=16999526078515305045|source>*) cluster: servers-usc1-prd-cluster summary: Application Latency Above Threshold threshold: 10s description: Latency for application - `conversations-api` route `/conversations/providers/live-chat/messages` [POST] on servers-usc1-prd-cluster is above threshold for the last 5 minutes current_value: 19s dashboard_link: <https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f/api-requests-overview?orgId=1&amp;from=now-30m&amp;to=now&amp;var-datasource=ber8nnhvgsjy8f&amp;var-container=conversations-api&amp;var-method=POST&amp;var-route=/conversations/providers/live-chat/messages&amp;var-pod_name=All&amp;var-minLatency=0&amp;var-maxLatency=100000&amp;var-latencyThreshold=5|here>
 ```
 
 ---
-*Generated by Alert Investigation Orchestrator [Codex] at 2026-11-23T11:37:14.257Z*
+*Generated by Alert Investigation Orchestrator [Codex] at 2026-11-23T12:08:12.851Z*
