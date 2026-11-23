@@ -1,145 +1,187 @@
 # Alert Investigation: Unknown
 
-**Investigation ID**: inv-2026-11-23-ce5d45cf
+**Investigation ID**: inv-2026-11-23-81dad01b
 **Workload**: CRM-conversations
 **Container**: CRM-conversations
 **Cluster**: web-users-servers-usc1-prd-cluster
 **Channel**: slack
-**Detected**: 2026-11-23T12:26:13.172Z
+**Detected**: 2026-11-23T12:37:42.582Z
 **Status**: delivering
 
 ## Root Cause
 
-**Summary**: Metrics and logs independently confirm an isolated successful slow OAuth callback. Subscription processing accounts for most of the reported duration, but Graph latency, retry delays, webhook validation and Mongo persistence remain indistinguishable. No specific root cause has two-source support; correlated operation timings are needed.
-**Confidence**: low
-**Category**: undetermined
+**Summary**: Firestore wait directly explains one slow snippets write. Independently observed database availability errors overlap that request, supporting a transient shared Firestore disruption as a contributor to the latency alert. The backend trigger, request-level retries and exact histogram amplification remain unconfirmed.
+**Confidence**: medium
+**Category**: dependency_latency_firestore
 
 ## Triage
 
 **Primary Anomaly**: none
-**Details**: An isolated latency anomaly is confirmed on leadconnector-api GET /leadconnector/outlook/finish_oauth: one of eight requests exceeded 10s, with a successful 10.821s callback logged at 17:49:08 IST. The reported 29s was not reproduced. No concurrent traffic, error, memory-pressure or restart anomaly was established. Historical matches largely reflect the incorrect CRM-conversations routing label; the earlier live-chat Firestore hypothesis is unverified for this route and time.
+**Details**: The anomaly is latency, which is absent from the allowed categories: snippets-api POST /snippets/:locationId p95 reached 32s during 18:01–18:06:30 IST and recovered to 74ms by 18:08. Metrics report one request exceeding 10s in the preceding hour, without a concurrent traffic surge, CPU spike, 5xx increase or restarts. JWT warnings do not establish causation. Historical matches largely reflect the incorrect CRM-conversations routing label; the earlier live-chat Firestore incident is a dependency lead, not a confirmed match.
 **Anomalous**: Yes
-**Deep Dive Direction**: YES — Subscription processing remains the correct direction; Firestore is unsupported. Synchronous subscription setup explains most callback latency, but the cause of the 8.343s interval remains unresolved.
+**Deep Dive Direction**: YES — the Firestore direction remains correct. Shared slowdown is supported, but its underlying trigger is unconfirmed.
 
-Need correlated per-attempt Microsoft Graph timings, statuses and retry delays; Mongo update timings; subscription-validation webhook timings; and confirmation that inspected source matches the deployed version.
+Need request-level Firestore RPC spans with retry attempts, statuses and server timing, correlated database telemetry, and image-to-commit provenance to verify deployed source.
 
 ## Cross-Validation
 
-**Confidence**: low
+**Confidence**: medium
 
 | Source | Finding | Agrees |
 |--------|---------|--------|
-| Grafana | One of eight callback requests exceeded 10s; all returned 2xx. No concurrent traffic, restart or resource-pressure anomaly was established. | ✓ |
-| Application logs | A successful callback took 10.821s at 17:49:08 IST, corroborating the isolated latency anomaly. Later subscription errors are not linked to this request. | ✓ |
-| Deep dive and deployed-revision source | The reported 8.343s interval falls within sequential subscription processing involving Graph and Mongo persistence. Source supports this execution path but cannot identify which operation caused the delay. | ✓ |
-| Kubernetes | Thirty pods were ready with zero application restarts and low resource usage approximately 22 minutes after detection; this cannot establish incident-time health. | ✓ |
-| Slack | A simultaneous subscribe-route latency alert supports investigating subscription processing, but neither thread independently establishes a cause. | ✓ |
+| Request logs | A successful 201 response completed at 18:00:56 IST in 15.565s; templates.set consumed 15.558s, directly confirming Firestore wait dominated this request. | ✓ |
+| Firestore telemetry | Commit UNAVAILABLE responses occurred during 17:59–18:01 IST, overlapping the slow request. Read failures also increased, supporting shared disruption without proving this write failed or retried. | ✓ |
+| Grafana | Route p95 peaked at 32s and recovered by 18:08 IST. One request exceeded 10s in the preceding hour; no concurrent traffic surge, CPU spike, 5xx increase or restarts was reported. | ✓ |
+| Kubernetes | Zero restarts and a rollout dating to November 12 weaken crash and deployment hypotheses. Current resource measurements cannot exclude alert-time pressure. | ✓ |
+| Slack | Reports of cross-service Firestore delays support the dependency hypothesis, but contain no independently correlated snippets request. | ✓ |
 
 ### Discrepancies
-- The reported 29s was not reproduced: logs show 10.821s, while sparse histogram data estimates P95 at 22s.
-- Triage labels primaryAnomaly as none despite metrics and logs corroborating an isolated slow callback.
-- The log investigation's duplicated-alert characterization conflicts with Slack identifying a distinct subscribe-route alert.
-- Falsification checks found no established traffic surge, restart or memory-pressure anomaly. Firestore involvement and specific Graph retry or Mongo slowdown claims lack request-level evidence.
-- The deployed-revision source corrects the checkout mismatch, but image contents were not verified. Additional trace and webhook queries were interrupted, leaving the causal chain incomplete.
+- The 32s histogram p95 differs from the logged 15.565s request. Histogram buckets and the exact alert expression remain unverified; 32s is not a confirmed individual request duration.
+- The request completed before the 18:01–18:06:30 metric elevation. Rolling-window effects are plausible but not verified.
+- Database aggregates cannot attribute UNAVAILABLE responses or retry attempts to this specific write; Cloud Trace lookup was blocked by quota errors.
+- Falsification checks weaken quota and contention explanations: Commit RESOURCE_EXHAUSTED and DEADLINE_EXCEEDED were zero, and ABORTED stayed within the local baseline. Seven-day database baseline and event-loop evidence are missing.
+- JWT warnings peaked later and lack a causal link. The merged Outlook investigation concerns a different workload.
 
 ## Deep Dive Findings
 
 {
-  "summary": "Deployed-revision source confirms sequential Graph subscription processing and Mongo persistence. The cause of the 8.343s interval remains unresolved.",
-  "workload": "leadconnector-api",
-  "trace_id": "c4daa6a0-1439-4063-b224-8d2c4b06ead7",
-  "findings": [
-    {
-      "finding": "The previously inspected checkout differs from the deployment revision.",
-      "evidence": "Live deployment revision 41 identifies COMMIT_ID a16293adb92f5735ff0cc2c983666a74ca0b8c52, PR 389, and the supplied image digest. Local HEAD is 8769ee52fb6236fe4fdf16aea9d4a3e2d1a01181.",
-      "confidence": "high",
-      "limitation": "Deployment metadata establishes the declared revision; image contents were not independently verified."
+  "status": "shared_firestore_disruption_supported_trigger_unconfirmed",
+  "workload": "snippets-api",
+  "summary": "New database telemetry shows transient UNAVAILABLE responses overlapping the slow snippets write. Image-to-commit provenance is now resolved. Request-level retries and the underlying Firestore trigger remain unconfirmed.",
+  "findings": {
+    "request": {
+      "request_id": "6ffee1ea-ff10-4bcf-a144-124f33134d4d",
+      "completion_ist": "2026-11-23T18:00:56.464+05:30",
+      "http_status": 201,
+      "duration_ms": 15565,
+      "firestore_duration_ms": 15557.515,
+      "operation": "templates.set",
+      "document_count": 1,
+      "database": "(default)",
+      "assessment": "Reverified: approximately 99.95% of logged request duration was spent awaiting Firestore."
     },
-    {
-      "finding": "Source retrieved at the declared deployment revision preserves the relevant execution order.",
-      "evidence": "subscribeMails awaits inbound Graph creation or renewal, then OutlookIntegration.updateOne, before outbound subscription processing. These operations have no explicit per-operation timing logs in the inspected function.",
-      "source": "https://github.com/GoHighLevel/leadconnector/blob/a16293adb92f5735ff0cc2c983666a74ca0b8c52/src/outlook/outlook_functions.ts",
-      "confidence": "high"
+    "database_telemetry": {
+      "metric": "firestore.googleapis.com/api/request_count",
+      "scope": "highlevel-backend, database=(default), location=nam5",
+      "aggregation": "60-second ALIGN_SUM",
+      "unavailable_responses": [
+        {
+          "interval_ist": "17:59–18:00",
+          "Commit": 56,
+          "BatchGetDocuments": 227,
+          "RunQuery": 98
+        },
+        {
+          "interval_ist": "18:00–18:01",
+          "Commit": 17,
+          "BatchGetDocuments": 68,
+          "RunQuery": 29
+        }
+      ],
+      "comparison": "These three methods recorded zero UNAVAILABLE responses in the other queried minute buckets during 17:55–18:07 IST.",
+      "additional_evidence": "BatchGetDocuments DEADLINE_EXCEEDED increased from 21–51/min during 17:55–17:59 to 531 and 591 during 18:00–18:02 IST.",
+      "counterevidence": "Commit RESOURCE_EXHAUSTED and DEADLINE_EXCEEDED remained zero throughout the queried window. Commit ABORTED was 185–204/min during 17:59–18:01, within the preceding 162–224/min range.",
+      "interpretation": "Supports a transient shared Firestore availability/latency disruption. Does not establish quota exhaustion, a contention spike, or retries on this individual write."
     },
-    {
-      "finding": "No additional request-level timing evidence was obtained.",
-      "evidence": "Trace and webhook log queries remained pending and were interrupted. This is an access/query limitation, not evidence that matching logs are absent.",
-      "confidence": "high"
+    "request_tracing": {
+      "correction": "The UUID in the log trace field equals x-request-id. It is not the request's B3 trace ID.",
+      "b3_trace_id": "b6fab27a061b3e9ccafff14d8b2c4d47",
+      "b3_span_id": "cafff14d8b2c4d47",
+      "b3_sampled": "0",
+      "log_span_id_present": false,
+      "cloud_trace_results": "Normalized UUID lookup returned 404. Both window searches and the subsequent actual B3 trace lookup returned 429 read-quota errors.",
+      "assessment": "Incoming B3 sampling was disabled; this does not prove every instrumentation path was unsampled. No RPC attempts, statuses or server timing were retrieved."
+    },
+    "image_provenance": {
+      "image_index_digest": "sha256:afbf48ba7ecbf62c06fafafc9b6a54da11a69de584a8e6ebf3e9d271c827e775",
+      "source_revision": "a536a87b18b374445ee703fd755107fcc55dd666",
+      "source_repository": "https://github.com/GoHighLevel/marketplace-backend",
+      "evidence": "OCI index links its amd64 image to a SLSA v1 attestation containing vcs:revision and vcs:source. The revision also exists in local Git history.",
+      "image_created_ist": "2026-11-12T17:59:48.667+05:30",
+      "correction": "Previous manifest 404 was caused by an incompatible Accept media type; accepting OCI media types succeeded.",
+      "qualification": "Registry-attested revision identified; attestation signature and build-context cleanliness were not independently verified.",
+      "source_url": "https://github.com/GoHighLevel/marketplace-backend/commit/a536a87b18b374445ee703fd755107fcc55dd666"
     }
-  ],
-  "root_cause": {
-    "status": "partially_resolved",
-    "prior_pass_evidence": "Successful 10.821s callback containing an 8.343054s interval during subscription processing.",
-    "conclusion": "Graph response latency, SDK retry delays, webhook validation and Mongo persistence cannot yet be separated.",
-    "unsupported_causes": ["Firestore", "Confirmed Graph retry", "Confirmed Mongo slowdown"]
   },
-  "missing_evidence": [
-    "Correlated Graph attempt durations, statuses, Retry-After values and request IDs.",
-    "Mongo update duration or database span for this request.",
-    "Subscription-validation webhook arrival and response timings."
+  "confidence": {
+    "firestore_wait_dominated_request": "high",
+    "shared_firestore_disruption_contributed": "medium",
+    "individual_write_retried": "unknown",
+    "underlying_backend_trigger": "unknown"
+  },
+  "next_action": "Use the verified database error window and B3 identifiers for a platform/GCP support investigation of backend availability. Request-level retry or server timing evidence is still required before prescribing retry or capacity changes.",
+  "limitations": [
+    "Cloud Trace read-quota errors prevented lookup of the actual B3 trace.",
+    "No seven-day database baseline was collected; rarity beyond the local window is unknown.",
+    "Database aggregates cannot associate an UNAVAILABLE response with this specific snippets write.",
+    "Live deployment tracing settings were not retrieved because the attempted Kubernetes endpoint timed out."
   ],
-  "recommended_action": "Obtain correlated Graph-attempt, Mongo-operation and validation-webhook timings; if unavailable historically, add instrumentation for recurrence without recording credentials or OAuth query parameters.",
   "log_queries_used": [
     {
-      "query": "resource.type=\"k8s_container\" resource.labels.container_name=\"leadconnector-api\" trace=\"projects/highlevel-backend/traces/c4daa6a0-1439-4063-b224-8d2c4b06ead7\" timestamp>=\"2026-11-23T12:18:50Z\" timestamp<=\"2026-11-23T12:19:15Z\"",
-      "result": "Interrupted while pending; no results obtained."
-    },
-    {
-      "query": "resource.type=\"k8s_container\" resource.labels.container_name=\"leadconnector-api\" timestamp>=\"2026-11-23T12:18:58Z\" timestamp<=\"2026-11-23T12:19:09Z\" (jsonPayload.message:\"/outlook/webhook\" OR jsonPayload.message:\"/outlook/outboundWebhook\")",
-      "result": "Interrupted while pending; no results obtained."
+      "query": "trace=\"projects/highlevel-backend/traces/6ffee1ea-ff10-4bcf-a144-124f33134d4d\" timestamp>=\"2026-11-23T12:30:00Z\" timestamp<=\"2026-11-23T12:31:00Z\"",
+      "limit": 5,
+      "result": "Three entries; verified response duration, Firestore duration and tracing headers."
     }
   ],
+  "metric_query_used": {
+    "filter": "metric.type=\"firestore.googleapis.com/api/request_count\" AND resource.labels.database_id=\"(default)\"",
+    "start": "2026-11-23T12:25:00Z",
+    "end": "2026-11-23T12:37:00Z",
+    "alignment_period": "60s",
+    "aligner": "ALIGN_SUM",
+    "pagination_complete": true
+  },
   "log_explorer_urls": [
     {
-      "url": "https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%20trace%3D%22projects%2Fhighlevel-backend%2Ftraces%2Fc4daa6a0-1439-4063-b224-8d2c4b06ead7%22;timeRange=2026-11-23T12%3A18%3A50Z%2F2026-11-23T12%3A19%3A15Z?project=highlevel-backend",
-      "status": "Prior-pass evidence link; results not revalidated this pass."
+      "name": "Request and Firestore timing",
+      "url": "https://console.cloud.google.com/logs/query;query=trace%3D%22projects%2Fhighlevel-backend%2Ftraces%2F6ffee1ea-ff10-4bcf-a144-124f33134d4d%22;timeRange=2026-11-23T12%3A30%3A00Z%2F2026-11-23T12%3A31%3A00Z?project=highlevel-backend"
     }
   ],
-  "access": "Read-only kubectl, authenticated gcloud CLI and GitHub CLI. GitHub connector returned 404; CLI retrieved the declared revision. No production changes or messages posted."
+  "access": "Existing local gcloud authentication, read-only Google APIs, registry metadata and local source inspection. No production changes or messages posted."
 }
 
 ## Evidence
 
 ### Dashboards (incident window)
-- [Request volume — leadconnector-api Outlook OAuth callback (sparse traffic)](https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f?orgId=1&from=1795434972000&to=1795436772000&var-datasource=ber8nnhvgsjy8f&var-cluster=web-users-servers-usc1-prd-cluster&var-container=leadconnector-api&var-method=GET&var-route=%2Fleadconnector%2Foutlook%2Ffinish_oauth&var-pod_name=All&viewPanel=1)
+- [P95 latency — snippets-api POST /snippets/:locationId; inspect the transient spike (panel aggregates clusters)](https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f?orgId=1&from=1795433880000&to=1795438080000&var-datasource=ber8nnhvgsjy8f&var-cluster=web-users-servers-usc1-prd-cluster&var-container=snippets-api&var-method=POST&var-route=%2Fsnippets%2F%3AlocationId&var-pod_name=All&var-minLatency=0&var-maxLatency=100000&viewPanel=17)
+- [Request rate — snippets-api POST /snippets/:locationId; low traffic during the latency spike](https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f?orgId=1&from=1795433880000&to=1795438080000&var-datasource=ber8nnhvgsjy8f&var-cluster=web-users-servers-usc1-prd-cluster&var-container=snippets-api&var-method=POST&var-route=%2Fsnippets%2F%3AlocationId&var-pod_name=All&viewPanel=1)
 
 ### Logs
-- [Log Explorer query](https://console.cloud.google.com/logs/query;query=resource.type%3D%22k8s_container%22%0Aresource.labels.container_name%3D%22leadconnector-api%22%0Aresource.labels.cluster_name%3D%22web-users-servers-usc1-prd-cluster%22%0Aseverity%3E%3DERROR%0A%28jsonPayload.message%3D~%22OAuth%7COUTLOOK%7Coutlook%7Csubscriptions%22%20OR%20textPayload%3D~%22OAuth%7COUTLOOK%7Coutlook%22%29;timeRange=2026-11-23T12%3A21%3A00Z%2F2026-11-23T12%3A31%3A00Z?project=highlevel-backend)
+- [Request and Firestore timing](https://console.cloud.google.com/logs/query;query=trace%3D%22projects%2Fhighlevel-backend%2Ftraces%2F6ffee1ea-ff10-4bcf-a144-124f33134d4d%22;timeRange=2026-11-23T12%3A30%3A00Z%2F2026-11-23T12%3A31%3A00Z?project=highlevel-backend)
 
 ### Related incidents
-- [Simultaneous Outlook subscribe latency on the same cluster — 23 Nov](https://gohighlevel.slack.com/archives/C097UPY34QJ/p1795436773202609)
-- [Outlook error-handling change promoted; default sanity passed — 23 Nov](https://gohighlevel.slack.com/archives/C096N87SBFW/p1795064245350139)
-- [Outlook delivery delays attributed to mailbox movement — 23 Nov](https://gohighlevel.slack.com/archives/C097UPY34QJ/p1795432541929029)
-- [Live-chat thread reports broader Firestore delays — 23 Nov](https://gohighlevel.slack.com/archives/C097UPY34QJ/p1795433181325409)
+- [Merge target investigates Outlook OAuth, not snippets — 23 Nov](https://gohighlevel.slack.com/archives/C097UPY34QJ/p1795436773172769)
+- [Team reports cross-service Firestore delays — 23 Nov](https://gohighlevel.slack.com/archives/C097UPY34QJ/p1795434619320709)
+- [Conversations isAutoReply deployment and production sanity — 23 Nov](https://gohighlevel.slack.com/archives/C013CG4N7U0/p1795423225028339)
 
 ## Investigation Timeline
 
 **Deep dive passes**: 3
 **Worker calls**: 13
 
-**Total worker time**: 1425.3s
+**Total worker time**: 1716.5s
 
 | Step | Type | Duration | Status |
 |------|------|----------|--------|
-| session_validation | decision | 11.1s | ✓ |
-| grafana-worker | worker | 113.2s | ✓ |
-| kubectl-worker | worker | 127.0s | ✓ |
-| log-explorer-worker | worker | 301.5s | ✓ |
-| slack-worker | worker | 89.8s | ✓ |
-| triage | worker | 17.3s | ✓ |
-| triage_llm_ranking | decision | 46.0s | ✓ |
-| deep_dive_pass_1 | worker | 305.7s | ✓ |
-| follow_up_check | decision | 16.6s | ✓ |
-| deep_dive_pass_2 | worker | 206.0s | ✓ |
-| follow_up_check | decision | 17.9s | ✓ |
-| deep_dive_pass_3 | worker | 150.8s | ✓ |
-| cross_validation | worker | 22.5s | ✓ |
+| session_validation | decision | 17.9s | ✓ |
+| grafana-worker | worker | 127.7s | ✓ |
+| kubectl-worker | worker | 125.5s | ✓ |
+| log-explorer-worker | worker | 372.7s | ✓ |
+| slack-worker | worker | 81.1s | ✓ |
+| triage | worker | 19.3s | ✓ |
+| triage_llm_ranking | decision | 47.8s | ✓ |
+| deep_dive_pass_1 | worker | 332.3s | ✓ |
+| follow_up_check | decision | 15.1s | ✓ |
+| deep_dive_pass_2 | worker | 276.9s | ✓ |
+| follow_up_check | decision | 15.9s | ✓ |
+| deep_dive_pass_3 | worker | 260.7s | ✓ |
+| cross_validation | worker | 23.4s | ✓ |
 
 ## Alert Context
 
 ```
-||*<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/I1H52XBJFZCFJ|#140719 HTTPLatencyPerSubTeam>* via CRM-conversations (*<https://vmalert.platform.prd.msgsndr.net/vmalert/alert?group_id=7041113084036845597&alert_id=5562857972713705657|source>*) cluster: web-users-servers-usc1-prd-cluster summary: Application Latency Above Threshold threshold: 10s description: Latency for application - `leadconnector-api` route `/leadconnector/outlook/finish_oauth` [GET] on web-users-servers-usc1-prd-cluster is above threshold for the last 5 minutes current_value: 29s dashboard_link: <https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f/api-requests-overview?orgId=1&from=now-30m&to=now&var-datasource=ber8nnhvgsjy8f&var-container=leadconnector-api&var-method=GET&var-route=/leadconnector/outlook/finish_oauth&var-pod_name=All&var-minLatency=0&var-maxLatency=100000&var-latencyThreshold=5|here> *<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/I1H52XBJFZCFJ|#140719 HTTPLatencyPerSubTeam>* via CRM-conversations (*<https://vmalert.platform.prd.msgsndr.net/vmalert/alert?group_id=7041113084036845597&amp;alert_id=5562857972713705657|source>*) cluster: web-users-servers-usc1-prd-cluster summary: Application Latency Above Threshold threshold: 10s description: Latency for application - `leadconnector-api` route `/leadconnector/outlook/finish_oauth` [GET] on web-users-servers-usc1-prd-cluster is above threshold for the last 5 minutes current_value: 29s dashboard_link: <https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f/api-requests-overview?orgId=1&amp;from=now-30m&amp;to=now&amp;var-datasource=ber8nnhvgsjy8f&amp;var-container=leadconnector-api&amp;var-method=GET&amp;var-route=/leadconnector/outlook/finish_oauth&amp;var-pod_name=All&amp;var-minLatency=0&amp;var-maxLatency=100000&amp;var-latencyThreshold=5|here>
+||*<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/I3XTJVMVXRPEI|#140721 HTTPLatencyPerSubTeam>* via CRM-conversations (*<https://vmalert.platform.prd.msgsndr.net/vmalert/alert?group_id=7041113084036845597&alert_id=8578529744200094170|source>*) cluster: web-users-servers-usc1-prd-cluster summary: Application Latency Above Threshold threshold: 10s description: Latency for application - `snippets-api` route `/snippets/:locationId` [POST] on web-users-servers-usc1-prd-cluster is above threshold for the last 5 minutes current_value: 32s dashboard_link: <https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f/api-requests-overview?orgId=1&from=now-30m&to=now&var-datasource=ber8nnhvgsjy8f&var-container=snippets-api&var-method=POST&var-route=/snippets/:locationId&var-pod_name=All&var-minLatency=0&var-maxLatency=100000&var-latencyThreshold=5|here> *<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/I3XTJVMVXRPEI|#140721 HTTPLatencyPerSubTeam>* via CRM-conversations (*<https://vmalert.platform.prd.msgsndr.net/vmalert/alert?group_id=7041113084036845597&amp;alert_id=8578529744200094170|source>*) cluster: web-users-servers-usc1-prd-cluster summary: Application Latency Above Threshold threshold: 10s description: Latency for application - `snippets-api` route `/snippets/:locationId` [POST] on web-users-servers-usc1-prd-cluster is above threshold for the last 5 minutes current_value: 32s dashboard_link: <https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f/api-requests-overview?orgId=1&amp;from=now-30m&amp;to=now&amp;var-datasource=ber8nnhvgsjy8f&amp;var-container=snippets-api&amp;var-method=POST&amp;var-route=/snippets/:locationId&amp;var-pod_name=All&amp;var-minLatency=0&amp;var-maxLatency=100000&amp;var-latencyThreshold=5|here>
 ```
 
 ---
-*Generated by Alert Investigation Orchestrator [Codex] at 2026-11-23T13:04:39.792Z*
+*Generated by Alert Investigation Orchestrator [Codex] at 2026-11-23T13:35:18.789Z*
