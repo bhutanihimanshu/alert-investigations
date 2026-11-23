@@ -1,140 +1,144 @@
 # Alert Investigation: Unknown
 
-**Investigation ID**: inv-2026-11-23-dc656f50
+**Investigation ID**: inv-2026-11-23-5c8b513c
 **Workload**: CRM-conversations
 **Container**: CRM-conversations
 **Cluster**: web-users-servers-usc1-prd-cluster
 **Channel**: slack
-**Detected**: 2026-11-23T13:07:43.846Z
+**Detected**: 2026-11-23T14:17:41.901Z
 **Status**: delivering
 
 ## Root Cause
 
-**Summary**: Confirmed intermittent email-resend latency, with Firestore SDK waiting the best-supported proximate explanation from supplied request analysis and contemporaneous dependency evidence. Increased database activity coincided with the slowdown but is not proven causal. Obtain request-level RPC attempts/backoff and database-owner caller attribution before selecting remediation.
-**Confidence**: medium
-**Category**: dependency_latency_underlying_cause_unresolved
+**Summary**: Unconfirmed cause of elevated POST /conversations/messages/relations latency. Shared dependency or application waiting remains plausible, but Redis, Firestore and rollout attribution lack request-level causal evidence.
+**Confidence**: low
+**Category**: unknown
 
 ## Triage
 
-**Primary Anomaly**: none
-**Details**: The anomaly is latency, which is absent from the allowed categories: conversations-api POST /conversations/messages/resend/email reached p99 110.4s at 18:35 IST; logs independently show 34.204s and 13.654s requests. Traffic and aggregate resources remained within historical ranges. Current pod health cannot establish incident-time health. Concurrent IAM Redis and OAuth timeouts are not yet linked to the slow requests.
+**Primary Anomaly**: error_spike
+**Details**: Primary symptom is route latency: POST /conversations/messages/relations p99 reached 49s versus a 1.85s seven-day mean, at low traffic. Container ERROR volume also rose to 129/min versus 28–62/min; sampled errors include Redis/rate-counter timeouts, but none identify this route. Firestore-related historical candidates are plausible leads, not confirmed matches. Revision 247 overlaps onset; later scheduling failures cannot explain onset. Current healthy pods do not establish incident-time health.
 **Anomalous**: Yes
-**Deep Dive Direction**: YES — The Firestore direction remains correct: SDK waits account for 91.2% and 74.2% of the two slow requests, but the underlying cause remains unresolved.
+**Deep Dive Direction**: YES — Shared dependency/application waiting remains the correct direction; root cause is unconfirmed.
 
-Need request-level RPC attempts/backoff timing or sampled dependency spans, plus database-owner backend diagnostics and read-volume analysis for 18:30–18:33 IST to distinguish retries, server/network delays, and increased load.
+Need slow and normal request spans from the node-local collector’s storage destination to separate Firestore RPC/retries, IAM/cache/Redis waits, and Objects/Associations timing. Also need the revision-246 middleware artifact and initialization-state evidence to verify pre-channel configuration waits and OAuth counter bypass.
 
 ## Cross-Validation
 
-**Confidence**: medium
+**Confidence**: low
 
 | Source | Finding | Agrees |
 |--------|---------|--------|
-| Grafana | Cluster-filtered metrics confirm intermittent route latency: p99 reached 110.4s at 18:35 IST. Traffic and aggregate resources remained within historical ranges; metrics do not identify the dependency responsible. | ✓ |
-| Cloud Logging | Two requests took 34.204s and 13.654s, independently confirming slow requests. Supplied prior analysis attributes 91.2% and 74.2% to Firestore SDK waits, but underlying request-level timing evidence is not included here. | ✓ |
-| Cloud Monitoring and local SDK source | Database-wide reads and deadline failures increased during 18:30–18:33 IST. The local logger measures the full awaited SDK operation, including possible retries; neither retry amplification nor load-induced latency is established. | ✓ |
-| Slack | Human reports describe cross-service Firestore delays before this alert, supporting the dependency hypothesis. Automated findings for another route are not independent proof of this route's cause. | ✓ |
-| Kubernetes | Current pods were healthy and the latest recorded rollout preceded the alert by approximately three hours. This does not establish incident-time health or corroborate Firestore causation. | ✗ |
+| Grafana | Route p99 reached 49s at low traffic. Confirms latency, but average CPU and memory do not establish the cause or exclude individual pod pressure. | ✓ |
+| GCP logs | Redis/cache errors occurred near detection, but sampled errors do not identify the alerted route. No request-level link establishes that these errors caused its latency. | ✗ |
+| Kubernetes | Revision 247 and CPU-driven scaling overlap detection. Later scheduling failures cannot explain onset; current healthy pods cannot establish incident-time health. | ✗ |
+| Slack | Other routes reportedly experienced Firestore waits, but the linked export incident concerns a different workload. This does not independently confirm Firestore involvement in relations latency. | ✗ |
+| Deep dive | No dependency spans were recovered. Local middleware bypasses OAuth counter checks for APP requests and increments counters asynchronously, weakening direct OAuth-counter attribution; incident-version behavior remains unverified. | ✗ |
 
 ### Discrepancies
-- Real latency is corroborated by metrics and logs; the underlying Firestore failure mechanism is unresolved.
-- The 110.4s percentile, 51.5s/96s alert values and sampled request durations represent different observations and do not reproduce one another.
-- Database-wide read growth cannot identify the responsible workload or distinguish original demand from retries.
-- Concurrent IAM Redis and OAuth errors are not linked to the slow requests; sampled error counts are not incident totals.
-- Falsification remains incomplete: request-level RPC spans are needed to distinguish backend delay, network delay and retry backoff. Incident-time per-pod throttling and event-loop lag were not established, and deployed SDK equivalence is unverified.
+- The primary verified anomaly is route latency, not route-specific errors; no two independent sources establish its causal mechanism.
+- The error histogram spans clusters, while latency is cluster-scoped. Sampled error counts are not population totals.
+- Low request volume makes p99 sensitive to individual requests; historical spikes exceeded this incident's peak.
+- Rollout timing establishes correlation only. No revision comparison or trace proves a deployment regression.
+- Falsification remains incomplete: compare slow and normal request spans for Firestore, IAM/cache, initialization and Objects/Associations waits, then verify revision-246 middleware behavior. Timed-out queries provide no negative evidence.
 
 ## Deep Dive Findings
 
 {
-  "summary": "Database-wide read activity increased during the slow requests, but its trigger remains unresolved. New metrics do not establish retry amplification; request-level RPC attempts and backoff timing remain unavailable.",
-  "confidence": {
-    "database_read_growth": "high",
-    "load_caused_latency": "unproven",
-    "request_retries": "unproven"
-  },
-  "new_findings": {
-    "scope": "highlevel-backend/(default), all API methods; 60-second sums with timestamps denoting bucket ends.",
-    "minute_buckets_ist": [
-      {"time": "18:30", "lookup_reads": 5838794, "query_reads": 7908061, "successful_api_calls": 8275688, "deadline_exceeded": 642},
-      {"time": "18:31", "lookup_reads": 7549745, "query_reads": 10030747, "successful_api_calls": 10505598, "deadline_exceeded": 1643},
-      {"time": "18:32", "lookup_reads": 8361183, "query_reads": 9950110, "successful_api_calls": 11690231, "deadline_exceeded": 8101},
-      {"time": "18:33", "lookup_reads": 8884194, "query_reads": 10034178, "successful_api_calls": 12442791, "deadline_exceeded": 7794}
-    ],
-    "interpretation": "Between 18:30 and 18:33 IST, lookups increased 52.2%, query reads 26.9%, and successful API calls 50.4%. Deadline failures at 18:32 were approximately 0.069% of successful calls. These failures alone do not explain the volume increase as retries; successful duplicate reads and retries invisible to these counters remain possible.",
-    "comparability": "These are broader metrics than the previous pass's BatchGetDocuments-specific figures and should not replace or be directly compared with those counts."
-  },
-  "rpc_evidence": {
-    "source_verified": "Local @platform-core/firestore observability.js wraps the entire awaited DocumentReference.get and emits duration after success. The slow-query logger does not record individual RPC attempts or backoff.",
-    "limitations": [
-      "Local package equivalence to the deployed version remains unverified.",
-      "A correlation-ID keyword search returned three HTTP request logs, not RPC attempt evidence.",
-      "The narrower message-field retry search stalled and was cancelled; its result is unknown.",
-      "No new dependency spans or database-owner backend diagnostics were obtained."
-    ]
-  },
-  "causal_assessment": "The supplied prior findings attribute most of both requests to Firestore SDK waits. This pass confirms coincident database activity growth, but cannot distinguish increased original demand, duplicate reads, backend delay, network delay or SDK retries. Database aggregates cannot identify the responsible workload.",
-  "metrics_queries_used": {
-    "window_utc": "2026-11-23T12:57:00Z/2026-11-23T13:04:00Z",
-    "filters": [
-      "metric.type=\"firestore.googleapis.com/document/read_ops_count\" AND resource.labels.database_id=\"(default)\"",
-      "metric.type=\"firestore.googleapis.com/api/request_count\" AND resource.labels.database_id=\"(default)\""
-    ],
-    "aggregation": "ALIGN_SUM and REDUCE_SUM over 60s; grouped by read type or response_code respectively."
-  },
-  "log_queries_used": [
+  "status": "partial",
+  "root_cause": "Unconfirmed. No request-level dependency spans were recovered.",
+  "confidence": "Low for causal attribution.",
+  "findings": [
     {
-      "query": "resource.type=\"k8s_container\" timestamp>=\"2026-11-23T13:00:35Z\" timestamp<=\"2026-11-23T13:02:20Z\" (trace=\"projects/highlevel-backend/traces/251ecfaa-057e-4367-97ef-396edc083684\" OR trace=\"projects/highlevel-backend/traces/0694ae53-798b-4ec2-87ec-2608a57f1b4c\") (\"retry\" OR \"backoff\" OR \"attempt\" OR \"BatchGetDocuments\" OR \"DEADLINE_EXCEEDED\")",
-      "limit": 5,
-      "returned": 3,
-      "result": "HTTP request logs; no verified RPC timing."
+      "finding": "The live node-local collector forwards traces to the platform collector.",
+      "evidence": "ConfigMap opentelemetry-collector-web-prd/opentelemetry-collector-web-users-servers-prd-agent configures the traces pipeline to export through otlphttp to https://otel-traces-http.platform.prd.msgsndr.net:443.",
+      "limitation": "Current configuration establishes routing, not successful export during the incident."
+    },
+    {
+      "finding": "Uptrace is the configured downstream trace destination in repository configuration.",
+      "evidence": "helm-overrides/gke-platform-prd-usc1/otel-traces-collector/custom-values.yaml configures the traces pipeline with otlp/uptrace and debug exporters.",
+      "limitation": "Live platform-cluster verification failed with EOF connecting to its private API. Uptrace storage and incident trace availability remain unverified."
+    },
+    {
+      "finding": "Local middleware weakens OAuth counter timeouts as the explanation for the slow APP request.",
+      "evidence": "Locally installed @platform-core/ratelimit 4.1.2 bypasses counter checks for non-OAUTH channels. Counter increments are also asynchronous rather than awaited.",
+      "limitation": "Revision-246 package contents were not recovered; this is local-code evidence only."
+    },
+    {
+      "finding": "Pre-channel initialization remains a possible wait, but is narrower than a recurring per-request Redis wait.",
+      "evidence": "Local getConfigManagerInstance assigns its singleton before awaiting initialization; subsequent calls return that instance immediately. The initial caller awaits Redis initialization before the channel check. Resolved @platform-core/dynamic-config 1.1.0 uses a five-second connection timer, but API fallback can extend the wait.",
+      "limitation": "No incident-time initialization state or duration was recovered. This does not establish that initialization delayed the sampled request."
+    },
+    {
+      "finding": "Revision-246 artifact verification remains blocked.",
+      "evidence": "Live ReplicaSet conversations-api-656f54bb95 confirms the supplied image digest. Registry manifest retrieval returned HTTP 404, including after bearer-token authentication; the gcloud artifact lookup was interrupted after returning no output.",
+      "limitation": "These failures do not prove the image is absent."
     }
   ],
-  "log_explorer_urls": [
-    "https://console.cloud.google.com/logs/query;query=trace%3D%22projects%2Fhighlevel-backend%2Ftraces%2F251ecfaa-057e-4367-97ef-396edc083684%22;timeRange=2026-11-23T13%3A00%3A35Z%2F2026-11-23T13%3A02%3A20Z?project=highlevel-backend"
+  "log_queries_used": [
+    {
+      "purpose": "Collector export errors",
+      "query": "resource.type=\"k8s_container\" resource.labels.container_name=\"otel-traces-collector-platform-prd\" timestamp>=\"2026-11-23T14:09:00Z\" timestamp<=\"2026-11-23T14:12:00Z\" severity>=ERROR",
+      "limit": 5,
+      "result": "Interrupted without results; not evidence of zero errors."
+    },
+    {
+      "purpose": "Middleware initialization failures",
+      "query": "resource.type=\"k8s_container\" resource.labels.container_name=\"conversations-api\" resource.labels.cluster_name=\"web-users-servers-usc1-prd-cluster\" timestamp>=\"2026-11-23T14:09:00Z\" timestamp<=\"2026-11-23T14:12:00Z\" jsonPayload.message=~\"Failed to initialize ConfigManager|Failed to initialize dynamic config listener\"",
+      "limit": 5,
+      "result": "Timed out after 35 seconds; initialization state remains unknown.",
+      "url": "https://console.cloud.google.com/logs/query;query=resource.labels.container_name%3D%22conversations-api%22%0Aresource.labels.cluster_name%3D%22web-users-servers-usc1-prd-cluster%22%0Aresource.type%3D%22k8s_container%22%0AjsonPayload.message%3D~%22Failed%20to%20initialize%20ConfigManager%7CFailed%20to%20initialize%20dynamic%20config%20listener%22;timeRange=2026-11-23T14%3A09%3A00Z%2F2026-11-23T14%3A12%3A00Z?project=highlevel-backend",
+      "url_validation": "Filters and time range match the attempted query; matching entries could not be verified."
+    }
   ],
-  "next_action": "Database owner should attribute the read increase by caller and collection and inspect backend diagnostics for 18:30–18:33 IST. Request per-attempt RPC spans with status, duration and backoff before selecting remediation.",
-  "access_path": "Existing gcloud credentials, Cloud Monitoring, Cloud Logging, read-only SQLite and local source. No messages posted, production changes made or orchestrator investigation launched."
+  "required_evidence": [
+    "Uptrace spans for slow trace candidate 1d2487117050d08194df6ab77e1a342c, correlated with request d9b7475f-a283-474e-a2bd-3a0cf44cf701.",
+    "A normal request's actual exported trace ID, correlated with request 4a1f96a9-c500-4d79-bd97-2ff8698fcb64.",
+    "Revision-246 ratelimit and dynamic-config package contents, plus initialization timing on the slow request's pod."
+  ],
+  "access": "Existing gcloud authentication and explicit kubectl contexts; read-only. Subagent launch failed because executor thread context was unavailable. No messages, production changes, or additional investigations were launched."
 }
 
 ## Evidence
 
 ### Dashboards (incident window)
-- [P99 latency — conversations-api resend email, intermittent spikes; panel combines clusters](https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f?orgId=1&from=1795437600000&to=1795442880000&var-datasource=ber8nnhvgsjy8f&var-cluster=web-users-servers-usc1-prd-cluster&var-container=conversations-api&var-method=POST&var-route=%2Fconversations%2Fmessages%2Fresend%2Femail&var-pod_name=All&var-minLatency=0&var-maxLatency=100000&var-latencyThreshold=10&viewPanel=11)
-- [Request rate — conversations-api resend email, low traffic during latency spikes](https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f?orgId=1&from=1795437600000&to=1795442880000&var-datasource=ber8nnhvgsjy8f&var-cluster=web-users-servers-usc1-prd-cluster&var-container=conversations-api&var-method=POST&var-route=%2Fconversations%2Fmessages%2Fresend%2Femail&var-pod_name=All&viewPanel=1)
-- [CPU by pod — conversations-api, inspect resource distribution during incident](https://prod.grafana.leadconnectorhq.com/d/a4859d4a-1e0a-4ae3-b9b2-d04d366cf29b?orgId=1&from=1795437600000&to=1795442880000&var-datasource=ber8nnhvgsjy8f&var-cluster=web-users-servers-usc1-prd-cluster&var-container=conversations-api&var-pod_name=All&var-gcpProject=highlevel-backend&viewPanel=16)
-- [Memory by pod — conversations-api, inspect working-set distribution during incident](https://prod.grafana.leadconnectorhq.com/d/a4859d4a-1e0a-4ae3-b9b2-d04d366cf29b?orgId=1&from=1795437600000&to=1795442880000&var-datasource=ber8nnhvgsjy8f&var-cluster=web-users-servers-usc1-prd-cluster&var-container=conversations-api&var-pod_name=All&var-gcpProject=highlevel-backend&viewPanel=30)
+- [P99 latency — conversations-api relations route; intermittent spikes, saved series hidden](https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f?orgId=1&from=1795441661000&to=1795446900000&var-datasource=ber8nnhvgsjy8f&var-cluster=web-users-servers-usc1-prd-cluster&var-container=conversations-api&var-method=POST&var-route=%2Fconversations%2Fmessages%2Frelations&var-pod_name=All&var-minLatency=0&var-maxLatency=100000&var-latencyThreshold=10&viewPanel=11)
+- [Request rate — conversations-api relations route; low-volume successful traffic](https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f?orgId=1&from=1795441661000&to=1795446900000&var-datasource=ber8nnhvgsjy8f&var-cluster=web-users-servers-usc1-prd-cluster&var-container=conversations-api&var-method=POST&var-route=%2Fconversations%2Fmessages%2Frelations&var-pod_name=All&viewPanel=1)
 
 ### Related incidents
-- [Team reports persistent cross-service Firestore delays — 23 Nov](https://gohighlevel.slack.com/archives/C097UPY34QJ/p1795434619320709)
-- [Nearby snippets latency; email alert merged across workloads — 23 Nov](https://gohighlevel.slack.com/archives/C097UPY34QJ/p1795437462582059)
+- [Export latency with reported Firestore waits; cause unresolved — 23 Nov](https://gohighlevel.slack.com/archives/C097UPY34QJ/p1795441064502709)
+- [Cross-route latency discussion and Firestore escalation — 23 Nov](https://gohighlevel.slack.com/archives/C097UPY34QJ/p1795433181325409)
+- [isAutoReply fix promoted; production sanity completed — 23 Nov](https://gohighlevel.slack.com/archives/C013CG4N7U0/p1795423225028339)
+- [Inbound-email detection change; production build shared — 23 Nov](https://gohighlevel.slack.com/archives/C096N87SBFW/p1795414948575729)
 
 ## Investigation Timeline
 
 **Deep dive passes**: 3
 **Worker calls**: 13
 
-**Total worker time**: 1741.6s
+**Total worker time**: 1733.8s
 
 | Step | Type | Duration | Status |
 |------|------|----------|--------|
-| session_validation | decision | 11.7s | ✓ |
-| grafana-worker | worker | 134.6s | ✓ |
-| kubectl-worker | worker | 139.2s | ✓ |
-| log-explorer-worker | worker | 428.3s | ✓ |
-| slack-worker | worker | 87.8s | ✓ |
-| triage | worker | 17.7s | ✓ |
-| triage_llm_ranking | decision | 44.8s | ✓ |
-| deep_dive_pass_1 | worker | 320.5s | ✓ |
-| follow_up_check | decision | 21.1s | ✓ |
-| deep_dive_pass_2 | worker | 263.0s | ✓ |
-| follow_up_check | decision | 20.8s | ✓ |
-| deep_dive_pass_3 | worker | 228.2s | ✓ |
-| cross_validation | worker | 23.8s | ✓ |
+| session_validation | decision | 11.9s | ✓ |
+| grafana-worker | worker | 114.1s | ✓ |
+| kubectl-worker | worker | 113.8s | ✓ |
+| log-explorer-worker | worker | 348.2s | ✓ |
+| slack-worker | worker | 82.7s | ✓ |
+| triage | worker | 16.8s | ✓ |
+| triage_llm_ranking | decision | 44.7s | ✓ |
+| deep_dive_pass_1 | worker | 443.6s | ✓ |
+| follow_up_check | decision | 14.4s | ✓ |
+| deep_dive_pass_2 | worker | 303.8s | ✓ |
+| follow_up_check | decision | 15.6s | ✓ |
+| deep_dive_pass_3 | worker | 204.3s | ✓ |
+| cross_validation | worker | 19.9s | ✓ |
 
 ## Alert Context
 
 ```
-||*<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IU2ICL5PFI1QG|#140724 HTTPLatencyPerSubTeam>* via CRM-conversations (*<https://vmalert.platform.prd.msgsndr.net/vmalert/alert?group_id=7041113084036845597&alert_id=14092078223828995011|source>*) cluster: web-users-servers-usc1-prd-cluster summary: Application Latency Above Threshold threshold: 10s description: Latency for application - `conversations-api` route `/conversations/messages/resend/email` [POST] on web-users-servers-usc1-prd-cluster is above threshold for the last 5 minutes current_value: 51.5s dashboard_link: <https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f/api-requests-overview?orgId=1&from=now-30m&to=now&var-datasource=ber8nnhvgsjy8f&var-container=conversations-api&var-method=POST&var-route=/conversations/messages/resend/email&var-pod_name=All&var-minLatency=0&var-maxLatency=100000&var-latencyThreshold=5|here> :package: Showing the last alert only out of 2 total. Visit <https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IU2ICL5PFI1QG|the plugin page> to see them all. *<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IU2ICL5PFI1QG|#140724 HTTPLatencyPerSubTeam>* via CRM-conversations (*<https://vmalert.platform.prd.msgsndr.net/vmalert/alert?group_id=7041113084036845597&amp;alert_id=14092078223828995011|source>*) cluster: web-users-servers-usc1-prd-cluster summary: Application Latency Above Threshold threshold: 10s description: Latency for application - `conversations-api` route `/conversations/messages/resend/email` [POST] on web-users-servers-usc1-prd-cluster is above threshold for the last 5 minutes current_value: 51.5s dashboard_link: <https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f/api-requests-overview?orgId=1&amp;from=now-30m&amp;to=now&amp;var-datasource=ber8nnhvgsjy8f&amp;var-container=conversations-api&amp;var-method=POST&amp;var-route=/conversations/messages/resend/email&amp;var-pod_name=All&amp;var-minLatency=0&amp;var-maxLatency=100000&amp;var-latencyThreshold=5|here> :package: Showing the last alert only out of 2 total. Visit <https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/IU2ICL5PFI1QG|the plugin page> to see them all.
+||*<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/I2FSU1HF1SZCP|#140735 HTTPLatencyPerSubTeam>* via CRM-conversations (*<https://vmalert.platform.prd.msgsndr.net/vmalert/alert?group_id=7041113084036845597&alert_id=15287468713337867209|source>*) cluster: web-users-servers-usc1-prd-cluster summary: Application Latency Above Threshold threshold: 10s description: Latency for application - `conversations-api` route `/conversations/messages/relations` [POST] on web-users-servers-usc1-prd-cluster is above threshold for the last 5 minutes current_value: 22s dashboard_link: <https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f/api-requests-overview?orgId=1&from=now-30m&to=now&var-datasource=ber8nnhvgsjy8f&var-container=conversations-api&var-method=POST&var-route=/conversations/messages/relations&var-pod_name=All&var-minLatency=0&var-maxLatency=100000&var-latencyThreshold=5|here> *<https://prod.grafana.leadconnectorhq.com/a/grafana-oncall-app/alert-groups/I2FSU1HF1SZCP|#140735 HTTPLatencyPerSubTeam>* via CRM-conversations (*<https://vmalert.platform.prd.msgsndr.net/vmalert/alert?group_id=7041113084036845597&amp;alert_id=15287468713337867209|source>*) cluster: web-users-servers-usc1-prd-cluster summary: Application Latency Above Threshold threshold: 10s description: Latency for application - `conversations-api` route `/conversations/messages/relations` [POST] on web-users-servers-usc1-prd-cluster is above threshold for the last 5 minutes current_value: 22s dashboard_link: <https://prod.grafana.leadconnectorhq.com/d/d2db17da-530c-43f3-9273-c0fd664c591f/api-requests-overview?orgId=1&amp;from=now-30m&amp;to=now&amp;var-datasource=ber8nnhvgsjy8f&amp;var-container=conversations-api&amp;var-method=POST&amp;var-route=/conversations/messages/relations&amp;var-pod_name=All&amp;var-minLatency=0&amp;var-maxLatency=100000&amp;var-latencyThreshold=5|here>
 ```
 
 ---
-*Generated by Alert Investigation Orchestrator [Codex] at 2026-11-23T14:30:42.171Z*
+*Generated by Alert Investigation Orchestrator [Codex] at 2026-11-23T15:36:46.929Z*
